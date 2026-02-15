@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rep+ HTTP Repeater</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Left Sidebar: Request List -->
+    <aside class="sidebar requests-sidebar">
+      <div class="sidebar-header">
+        <h2>Captured Requests</h2>
+        <div class="search-filter">
+          <input type="text" id="searchInput" placeholder="Search URL..." class="search-input">
+          <select id="methodFilter" class="filter-select">
+            <option value="">All Methods</option>
+            <option value="GET">GET</option>
+            <option value="POST">POST</option>
+            <option value="PUT">PUT</option>
+            <option value="DELETE">DELETE</option>
+            <option value="PATCH">PATCH</option>
+          </select>
+          <select id="statusFilter" class="filter-select">
+            <option value="">All Status</option>
+            <option value="2xx">2xx</option>
+            <option value="3xx">3xx</option>
+            <option value="4xx">4xx</option>
+            <option value="5xx">5xx</option>
+          </select>
+        </div>
+        <div class="scope-block-section">
+          <button type="button" id="scopeBlockToggle" class="scope-block-toggle">
+            <span class="toggle-icon">▼</span> Scope & Block
+          </button>
+          <div id="scopeBlockContent" class="scope-block-content collapsed">
+            <div class="scope-block-group">
+              <label>Scope (capture only these domains)</label>
+              <div class="domain-add-row">
+                <input type="text" id="scopeInput" placeholder="example.com" class="domain-input">
+                <button type="button" id="addScopeBtn" class="btn btn-small">Add</button>
+              </div>
+              <ul id="scopeList" class="domain-list"></ul>
+              <p class="scope-hint">Empty = capture all</p>
+            </div>
+            <div class="scope-block-group">
+              <label>Block (never capture these domains)</label>
+              <div class="domain-add-row">
+                <input type="text" id="blockInput" placeholder="analytics.example.com" class="domain-input">
+                <button type="button" id="addBlockBtn" class="btn btn-small">Add</button>
+              </div>
+              <ul id="blockList" class="domain-list"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <ul id="requestList" class="request-list"></ul>
+    </aside>
+
+    <!-- Center: Request Editor + Response -->
+    <main class="main-content">
+      <div class="mode-tabs">
+        <button type="button" class="mode-tab active" data-mode="repeater">Repeater</button>
+        <button type="button" class="mode-tab" data-mode="intruder">Intruder</button>
+        <button type="button" class="mode-tab" data-mode="decoder">Decoder</button>
+        <button type="button" class="mode-tab" data-mode="scanner">Scanner</button>
+      </div>
+
+      <div id="repeaterPanel" class="mode-panel">
+      <div class="editor-section">
+        <div class="section-header">
+          <h3>Request Editor</h3>
+          <div class="editor-actions">
+            <button id="sendBtn" class="btn btn-primary">Send</button>
+            <button id="saveRequestBtn" class="btn btn-secondary">Save Request</button>
+            <button id="loadRequestBtn" class="btn btn-secondary">Load Request</button>
+            <button id="generateCurlBtn" class="btn btn-secondary">Generate cURL</button>
+            <button id="sendToIntruderBtn" class="btn btn-secondary">Send to Intruder</button>
+          </div>
+        </div>
+        <div class="request-editor">
+          <div class="editor-row">
+            <select id="methodSelect" class="method-select">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+              <option value="PATCH">PATCH</option>
+              <option value="HEAD">HEAD</option>
+              <option value="OPTIONS">OPTIONS</option>
+            </select>
+            <input type="text" id="urlInput" class="url-input" placeholder="https://example.com/api/endpoint">
+          </div>
+          <div class="editor-section-inner">
+            <h4>Headers <button id="addHeaderBtn" class="btn btn-small">+ Add</button></h4>
+            <div id="headersEditor" class="key-value-editor"></div>
+          </div>
+          <div class="editor-section-inner">
+            <h4>Body</h4>
+            <div class="body-tabs">
+              <button class="tab-btn active" data-tab="raw">Raw</button>
+              <button class="tab-btn" data-tab="json">JSON Pretty</button>
+            </div>
+            <textarea id="bodyEditor" class="body-editor" placeholder="Request body (JSON, form data, etc.)"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="response-section">
+        <div class="section-header">
+          <h3>Response</h3>
+          <div class="response-meta" id="responseMeta">
+            <span id="statusCode">—</span>
+            <span id="responseSize">—</span>
+            <span id="contentType">—</span>
+          </div>
+        </div>
+        <div class="response-tabs">
+          <button class="tab-btn active" data-tab="pretty">Pretty</button>
+          <button class="tab-btn" data-tab="raw">Raw</button>
+          <button class="tab-btn" data-tab="headers">Headers</button>
+          <button class="tab-btn" data-tab="timing">Timing</button>
+        </div>
+        <div id="responseContent" class="response-content">
+          <pre id="responsePretty" class="response-pretty"></pre>
+          <pre id="responseRaw" class="response-raw hidden"></pre>
+          <pre id="responseHeaders" class="response-headers hidden"></pre>
+          <pre id="responseTiming" class="response-timing hidden"></pre>
+        </div>
+      </div>
+      </div>
+
+      <div id="intruderPanel" class="mode-panel hidden">
+        <div class="intruder-layout">
+          <div class="intruder-config">
+            <div class="section-header">
+              <h3>Request Template</h3>
+              <p class="intruder-hint">Use §payload§ to mark injection points</p>
+            </div>
+            <div class="intruder-request">
+              <div class="editor-row">
+                <select id="intruderMethod" class="method-select">
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="DELETE">DELETE</option>
+                  <option value="PATCH">PATCH</option>
+                </select>
+                <input type="text" id="intruderUrl" class="url-input" placeholder="https://example.com/api?id=§1§">
+              </div>
+              <div class="editor-section-inner">
+                <h4>Headers <button type="button" id="addIntruderHeaderBtn" class="btn btn-small">+ Add</button></h4>
+                <div id="intruderHeaders" class="key-value-editor"></div>
+              </div>
+              <div class="editor-section-inner">
+                <h4>Body</h4>
+                <textarea id="intruderBody" class="body-editor" placeholder='{"id": "§1§"}'></textarea>
+              </div>
+            </div>
+            <div class="intruder-payloads">
+              <div class="section-header">
+                <h3>Payloads</h3>
+                <div class="payload-type-row">
+                  <select id="payloadType" class="filter-select">
+                    <option value="list">Simple list</option>
+                    <option value="numbers">Numbers</option>
+                  </select>
+                </div>
+              </div>
+              <div id="payloadListSection" class="payload-section">
+                <textarea id="payloadList" class="payload-textarea" placeholder="payload1&#10;payload2&#10;payload3"></textarea>
+              </div>
+              <div id="payloadNumbersSection" class="payload-section hidden">
+                <div class="number-range">
+                  <input type="number" id="payloadFrom" placeholder="1" value="1">
+                  <span>to</span>
+                  <input type="number" id="payloadTo" placeholder="100" value="10">
+                  <input type="number" id="payloadStep" placeholder="Step" value="1" title="Step">
+                </div>
+              </div>
+            </div>
+            <div class="intruder-actions">
+              <button type="button" id="startAttackBtn" class="btn btn-primary">Start Attack</button>
+              <button type="button" id="stopAttackBtn" class="btn btn-secondary hidden">Stop</button>
+            </div>
+          </div>
+          <div class="intruder-results">
+            <div class="section-header">
+              <h3>Results</h3>
+              <span id="intruderStatus" class="intruder-status"></span>
+            </div>
+            <div class="results-table-wrap">
+              <table id="intruderResultsTable" class="results-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Payload</th>
+                    <th>Status</th>
+                    <th>Length</th>
+                    <th>Time (ms)</th>
+                    <th>Response</th>
+                  </tr>
+                </thead>
+                <tbody id="intruderResultsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="decoderPanel" class="mode-panel hidden">
+        <div class="decoder-layout">
+          <div class="decoder-section">
+            <div class="section-header">
+              <h3>Input</h3>
+              <div class="decoder-actions">
+                <select id="decoderFormat" class="filter-select">
+                  <option value="base64">Base64</option>
+                  <option value="url">URL</option>
+                  <option value="hex">Hex</option>
+                  <option value="html">HTML Entities</option>
+                  <option value="jwt">JWT</option>
+                </select>
+                <button type="button" id="decodeBtn" class="btn btn-primary">Decode</button>
+                <button type="button" id="encodeBtn" class="btn btn-secondary">Encode</button>
+              </div>
+            </div>
+            <textarea id="decoderInput" class="decoder-textarea" placeholder="Paste encoded/decoded text here..."></textarea>
+          </div>
+          <div class="decoder-section">
+            <div class="section-header">
+              <h3>Output</h3>
+              <button type="button" id="copyDecodedBtn" class="btn btn-small">Copy</button>
+            </div>
+            <textarea id="decoderOutput" class="decoder-textarea" placeholder="Result will appear here..." readonly></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div id="scannerPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>Client-Side Security Scan</h3>
+            <button type="button" id="runScanBtn" class="btn btn-primary">Run Scan</button>
+          </div>
+          <div id="scannerResults" class="scanner-results"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right Sidebar: AI Assist -->
+    <aside class="sidebar ai-sidebar">
+      <div class="sidebar-header">
+        <h2>AI Assist</h2>
+      </div>
+      <div class="ai-content">
+        <div class="ai-section">
+          <h4>Endpoint Analysis</h4>
+          <p id="endpointAnalysis" class="ai-placeholder">
+            Select a request to see endpoint analysis...
+          </p>
+        </div>
+        <div class="ai-section">
+          <h4>Security Test Suggestions</h4>
+          <ul id="securitySuggestions" class="security-list">
+            <li>SQL Injection</li>
+            <li>IDOR (Insecure Direct Object Reference)</li>
+            <li>Auth Bypass</li>
+            <li>Rate Limit Tests</li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="contextMenu" class="context-menu hidden">
+    <button type="button" class="context-menu-item" data-action="copy-curl">
+      Copy as cURL
+    </button>
+    <button type="button" class="context-menu-item" data-action="send-to-decoder">
+      Send to Decoder
+    </button>
+  </div>
+
+  <div id="intruderResultModal" class="modal hidden">
+    <div class="modal-content modal-large">
+      <h4>Response #<span id="resultModalIndex"></span></h4>
+      <p class="modal-meta"><span id="resultModalStatus"></span> · <span id="resultModalLength"></span> · <span id="resultModalTime"></span>ms</p>
+      <pre id="resultModalBody" class="result-modal-body"></pre>
+      <div class="modal-actions">
+        <button type="button" id="resultModalClose" class="btn btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="copyModal" class="modal hidden">
+    <div class="modal-content">
+      <h4>Copy cURL command</h4>
+      <p class="modal-hint">Select all (Ctrl+A) and copy (Ctrl+C)</p>
+      <textarea id="copyModalText" class="copy-modal-text" readonly></textarea>
+      <div class="modal-actions">
+        <button type="button" id="copyModalClose" class="btn btn-primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "rep+ HTTP Repeater",
+  "version": "1.0.0",
+  "description": "Lightweight HTTP Repeater inside Chrome DevTools - like Burp Repeater in your browser",
+  "devtools_page": "devtools.html",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "webRequest",
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-script.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
