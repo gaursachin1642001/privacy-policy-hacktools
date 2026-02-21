@@ -73,9 +73,6 @@
           <h3>Request Editor</h3>
           <div class="editor-actions">
             <button id="sendBtn" class="btn btn-primary">Send</button>
-            <button id="saveRequestBtn" class="btn btn-secondary">Save Request</button>
-            <button id="loadRequestBtn" class="btn btn-secondary">Load Request</button>
-            <button id="generateCurlBtn" class="btn btn-secondary">Generate cURL</button>
             <button id="sendToIntruderBtn" class="btn btn-secondary">Send to Intruder</button>
           </div>
         </div>
@@ -100,9 +97,10 @@
             <h4>Body</h4>
             <div class="body-tabs">
               <button class="tab-btn active" data-tab="raw">Raw</button>
-              <button class="tab-btn" data-tab="json">JSON Pretty</button>
+              <button class="tab-btn" data-tab="pretty">Pretty</button>
             </div>
             <textarea id="bodyEditor" class="body-editor" placeholder="Request body (JSON, form data, etc.)"></textarea>
+            <textarea id="bodyPrettyView" class="body-editor body-pretty-view hidden"></textarea>
           </div>
         </div>
       </div>
@@ -136,7 +134,7 @@
           <div class="intruder-config">
             <div class="section-header">
               <h3>Request Template</h3>
-              <p class="intruder-hint">Use §payload§ to mark injection points</p>
+              <p class="intruder-hint">Use §payload§ or $payload$ to mark injection points</p>
             </div>
             <div class="intruder-request">
               <div class="editor-row">
@@ -155,7 +153,12 @@
               </div>
               <div class="editor-section-inner">
                 <h4>Body</h4>
+                <div class="body-tabs intruder-body-tabs">
+                  <button type="button" class="tab-btn active" data-tab="raw">Raw</button>
+                  <button type="button" class="tab-btn" data-tab="pretty">Pretty</button>
+                </div>
                 <textarea id="intruderBody" class="body-editor" placeholder='{"id": "§1§"}'></textarea>
+                <textarea id="intruderBodyPrettyView" class="body-editor body-pretty-view hidden"></textarea>
               </div>
             </div>
             <div class="intruder-payloads">
@@ -173,11 +176,22 @@
               </div>
               <div id="payloadNumbersSection" class="payload-section hidden">
                 <div class="number-range">
-                  <input type="number" id="payloadFrom" placeholder="1" value="1">
-                  <span>to</span>
-                  <input type="number" id="payloadTo" placeholder="100" value="10">
-                  <input type="number" id="payloadStep" placeholder="Step" value="1" title="Step">
+                  <label>From</label>
+                  <input type="number" id="payloadFrom" placeholder="1" value="1" title="Start value">
+                  <label>To</label>
+                  <input type="number" id="payloadTo" placeholder="100" value="10" title="End value">
+                  <label>Step</label>
+                  <input type="number" id="payloadStep" placeholder="1" value="1" min="1" title="Increment">
                 </div>
+              </div>
+            </div>
+            <div class="intruder-speed">
+              <label>Speed</label>
+              <div class="speed-row">
+                <span>Concurrency:</span>
+                <input type="number" id="intruderConcurrency" min="1" max="20" value="5" title="Parallel requests (1-20)">
+                <span>Delay (ms):</span>
+                <input type="number" id="intruderDelay" min="0" max="5000" value="0" title="Delay between batches">
               </div>
             </div>
             <div class="intruder-actions">

@@ -226,6 +226,28 @@ function setupEventListeners() {
   methodFilter.addEventListener('change', renderRequestList);
   statusFilter.addEventListener('change', renderRequestList);
 
+  requestList.addEventListener('click', (e) => {
+    const copyBtn = e.target.closest('.copy-curl-btn');
+    if (copyBtn) {
+      e.stopPropagation();
+      const item = copyBtn.closest('.request-item');
+      const req = item && capturedRequests.find((r) => String(r.id) === item.dataset.requestId);
+      if (req) copyCurlFromRequest(req);
+      return;
+    }
+    const item = e.target.closest('.request-item');
+    if (!item) return;
+    const req = capturedRequests.find((r) => String(r.id) === item.dataset.requestId);
+    if (req) selectRequest(req);
+  });
+  requestList.addEventListener('contextmenu', (e) => {
+    const item = e.target.closest('.request-item');
+    if (!item) return;
+    e.preventDefault();
+    const req = capturedRequests.find((r) => String(r.id) === item.dataset.requestId);
+    if (req) showRequestContextMenu(e, req);
+  });
+
   sendBtn.addEventListener('click', sendRequest);
   document.getElementById('addHeaderBtn').addEventListener('click', () => addHeaderRow('', ''));
   document.getElementById('scopeBlockToggle').addEventListener('click', toggleScopeBlock);
@@ -237,14 +259,71 @@ function setupEventListeners() {
   document.getElementById('blockInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') addDomain('block');
   });
-  document.getElementById('saveRequestBtn').addEventListener('click', saveRequest);
-  document.getElementById('loadRequestBtn').addEventListener('click', loadRequest);
-  document.getElementById('generateCurlBtn').addEventListener('click', generateCurl);
   document.getElementById('sendToIntruderBtn').addEventListener('click', sendToIntruder);
 
   document.querySelectorAll('.mode-tab').forEach((tab) => {
     tab.addEventListener('click', () => switchMode(tab.dataset.mode));
   });
+}
+
+/**
+ * Format body for readable display (JSON or URL-encoded)
+ */
+function formatBodyForDisplay(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return JSON.stringify(parsed, null, 2);
+  } catch (_) {}
+
+  try {
+    const params = new URLSearchParams(trimmed);
+    const entries = [...params];
+    if (entries.length > 0) {
+      const lines = [];
+      for (const [k, v] of entries) {
+        try {
+          lines.push(`${k} = ${decodeURIComponent(v)}`);
+        } catch (_) {
+          lines.push(`${k} = ${v}`);
+        }
+      }
+      return lines.join('\n');
+    }
+  } catch (_) {}
+
+  return trimmed;
+}
+
+/**
+ * Convert pretty-formatted content back to raw (for request body)
+ */
+function unformatBodyFromDisplay(prettyContent) {
+  const trimmed = (prettyContent || '').trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    return JSON.stringify(parsed);
+  } catch (_) {}
+
+  const lines = trimmed.split(/\r?\n/).filter(Boolean);
+  if (lines.some((l) => l.includes(' = '))) {
+    const params = new URLSearchParams();
+    for (const line of lines) {
+      const idx = line.indexOf(' = ');
+      if (idx > 0) {
+        const k = line.slice(0, idx).trim();
+        const v = line.slice(idx + 3).trim();
+        params.set(k, v);
+      }
+    }
+    if (params.toString()) return params.toString();
+  }
+
+  return trimmed;
 }
 
 /**
@@ -256,14 +335,34 @@ function setupTabSwitchers() {
       const tab = btn.dataset.tab;
       const container = btn.closest('.editor-section-inner, .response-section, .section-header')?.parentElement;
 
-      if (btn.closest('.body-tabs')) {
-        document.querySelectorAll('.body-tabs .tab-btn').forEach((b) => b.classList.remove('active'));
+      if (btn.closest('.intruder-body-tabs')) {
+        const tabs = btn.closest('.intruder-body-tabs');
+        tabs.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
-        if (tab === 'json') {
-          try {
-            const parsed = JSON.parse(bodyEditor.value || '{}');
-            bodyEditor.value = JSON.stringify(parsed, null, 2);
-          } catch (_) {}
+        const intruderBody = document.getElementById('intruderBody');
+        const prettyView = document.getElementById('intruderBodyPrettyView');
+        if (tab === 'pretty') {
+          prettyView.value = formatBodyForDisplay(intruderBody.value || '');
+          prettyView.classList.remove('hidden');
+          intruderBody.classList.add('hidden');
+        } else {
+          intruderBody.value = unformatBodyFromDisplay(prettyView.value);
+          prettyView.classList.add('hidden');
+          intruderBody.classList.remove('hidden');
+        }
+      } else if (btn.closest('.body-tabs') && !btn.closest('.intruder-body-tabs')) {
+        const tabs = btn.closest('.body-tabs');
+        tabs.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        const prettyView = document.getElementById('bodyPrettyView');
+        if (tab === 'pretty') {
+          prettyView.value = formatBodyForDisplay(bodyEditor.value || '');
+          prettyView.classList.remove('hidden');
+          bodyEditor.classList.add('hidden');
+        } else {
+          bodyEditor.value = unformatBodyFromDisplay(prettyView.value);
+          prettyView.classList.add('hidden');
+          bodyEditor.classList.remove('hidden');
         }
       } else if (btn.closest('.response-tabs')) {
         document.querySelectorAll('.response-tabs .tab-btn').forEach((b) => b.classList.remove('active'));
@@ -312,9 +411,10 @@ function renderRequestList() {
     return;
   }
 
-  filtered.forEach((req, idx) => {
+  filtered.forEach((req) => {
     const li = document.createElement('li');
     li.className = `request-item ${selectedRequest?.id === req.id ? 'selected' : ''}`;
+    li.dataset.requestId = req.id;
     const statusClass = req.status >= 500 ? 'status-5xx' : req.status >= 400 ? 'status-4xx' : req.status >= 300 ? 'status-3xx' : 'status-2xx';
     li.innerHTML = `
       <div class="request-item-main">
@@ -323,18 +423,16 @@ function renderRequestList() {
       </div>
       <div class="meta"><span class="${statusClass}">${req.status}</span> · ${escapeHtml(req.time)}</div>
     `;
-    li.querySelector('.request-item-main').addEventListener('click', (e) => {
-      if (!e.target.closest('.copy-curl-btn')) selectRequest(req, filtered.indexOf(req));
-    });
-    li.querySelector('.copy-curl-btn').addEventListener('click', (e) => {
-      e.stopPropagation();
-      copyCurlFromRequest(req);
-    });
-    li.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      showRequestContextMenu(e, req);
-    });
     requestList.appendChild(li);
+  });
+}
+
+/**
+ * Update selection highlight without full re-render (faster)
+ */
+function updateRequestListSelection(req) {
+  requestList.querySelectorAll('.request-item').forEach((li) => {
+    li.classList.toggle('selected', li.dataset.requestId === String(req?.id));
   });
 }
 
@@ -355,9 +453,14 @@ function selectRequest(req, index) {
   addHeaderRow('', ''); // Empty row for new headers
 
   // Body
-  bodyEditor.value = req.request.postData?.text || '';
+  const bodyText = req.request.postData?.text || '';
+  bodyEditor.value = bodyText;
+  const prettyView = document.getElementById('bodyPrettyView');
+  if (prettyView && !prettyView.classList.contains('hidden')) {
+    prettyView.value = formatBodyForDisplay(bodyText);
+  }
 
-  renderRequestList();
+  updateRequestListSelection(req);
   updateAIAssist(req);
 }
 
@@ -412,7 +515,11 @@ async function sendRequest() {
   }
 
   const rawHeaders = getHeadersFromEditor();
-  const body = bodyEditor.value?.trim() || null;
+  const bodyPrettyEl = document.getElementById('bodyPrettyView');
+  let body = bodyEditor.value?.trim() || null;
+  if (bodyPrettyEl && !bodyPrettyEl.classList.contains('hidden')) {
+    body = unformatBodyFromDisplay(bodyPrettyEl.value)?.trim() || null;
+  }
   const method = methodSelect.value;
 
   sendBtn.disabled = true;
@@ -566,67 +673,76 @@ function showResponseError(msg) {
  * Update AI Assist mock content
  */
 function updateAIAssist(req) {
+  const suggestionsEl = document.getElementById('securitySuggestions');
   if (!req) {
     endpointAnalysisEl.textContent = 'Select a request to see endpoint analysis...';
+    if (suggestionsEl) suggestionsEl.innerHTML = '<li>SQL Injection</li><li>IDOR</li><li>Auth Bypass</li><li>Rate Limit Tests</li>';
     return;
   }
 
-  const path = new URL(req.url).pathname;
+  const analysis = analyzeEndpoint(req);
   endpointAnalysisEl.innerHTML = `
-    <strong>${escapeHtml(req.method)} ${escapeHtml(path)}</strong><br><br>
-    This endpoint appears to handle ${req.method} requests. Based on the URL structure and method,
-    it may be used for ${inferPurpose(req)}. Consider testing authentication, authorization,
-    and input validation.
+    <strong>${escapeHtml(req.method)} ${escapeHtml(analysis.path)}</strong><br><br>
+    ${analysis.description}<br><br>
+    <strong>Likely purpose:</strong> ${analysis.purpose}<br><br>
+    <strong>Key risks:</strong> ${analysis.risks}
   `;
+
+  if (suggestionsEl) {
+    suggestionsEl.innerHTML = analysis.suggestions.map((s) => `<li>${escapeHtml(s)}</li>`).join('');
+  }
 }
 
-function inferPurpose(req) {
-  const path = (req.url || '').toLowerCase();
-  if (path.includes('login') || path.includes('auth')) return 'authentication';
-  if (path.includes('user') || path.includes('profile')) return 'user data retrieval';
-  if (path.includes('api') && req.method === 'POST') return 'data submission';
-  if (path.includes('search') || path.includes('query')) return 'search/query operations';
-  return 'general API operations';
-}
+function analyzeEndpoint(req) {
+  const url = (req.url || '').toLowerCase();
+  const path = (() => { try { return new URL(req.url).pathname; } catch (_) { return url; } })();
+  const method = (req.method || 'GET').toUpperCase();
+  const body = req.request?.postData?.text || '';
+  const host = (() => { try { return new URL(req.url).hostname; } catch (_) { return ''; } })();
 
-/**
- * Placeholder: Save request to storage
- */
-function saveRequest() {
-  const data = {
-    method: methodSelect.value,
-    url: urlInput.value,
-    headers: getHeadersFromEditor(),
-    body: bodyEditor.value,
+  const patterns = [
+    { match: /jserrors|js-error|error\.js|nrjs|nr-data|bam\.nr/i, purpose: 'JavaScript error reporting / telemetry (e.g. New Relic)', risks: 'Payload injection in error payload, data exfiltration, PII in error messages', suggestions: ['Payload injection in error payload', 'XSS in error message field', 'IDOR in error ID', 'Check for PII in request body'] },
+    { match: /collect|analytics|tracking|clarity|gtm|ga|gtag|segment|mixpanel|amplitude/i, purpose: 'Analytics or tracking data', risks: 'Data injection, event spoofing, PII leakage', suggestions: ['Event spoofing / fake events', 'Parameter tampering', 'Check for PII in payload'] },
+    { match: /login|auth|signin|oauth|token|refresh/i, purpose: 'Authentication or session management', risks: 'Credential stuffing, session fixation, token theft', suggestions: ['Brute force / credential stuffing', 'Session fixation', 'Token leakage in response', 'Password reset flow'] },
+    { match: /kyc|user_details|profile|account|me/i, purpose: 'User profile or KYC data', risks: 'IDOR, privilege escalation, data exposure', suggestions: ['IDOR (change user ID)', 'Auth bypass', 'Horizontal privilege escalation'] },
+    { match: /api\/v?\d*\/?user|users\/|\/user\//i, purpose: 'User resource API', risks: 'IDOR, mass assignment, unauthorized access', suggestions: ['IDOR (user ID in path)', 'Mass assignment', 'Method override (GET to modify)'] },
+    { match: /search|query|filter|find/i, purpose: 'Search or query', risks: 'SQL/NoSQL injection, SSRF, blind injection', suggestions: ['SQL/NoSQL injection', 'SSRF via URL params', 'Boolean-based blind injection'] },
+    { match: /upload|file|image|media/i, purpose: 'File upload', risks: 'Unrestricted file upload, path traversal', suggestions: ['File type bypass', 'Path traversal', 'Content-Type spoofing'] },
+    { match: /payment|checkout|order|cart/i, purpose: 'Payment or checkout', risks: 'Price manipulation, order tampering', suggestions: ['Price tampering', 'Order ID manipulation', 'Quantity overflow'] },
+    { match: /admin|internal|manage|config/i, purpose: 'Admin or internal API', risks: 'Unauthorized access, privilege escalation', suggestions: ['Auth bypass', 'Role escalation', 'Direct object access'] },
+    { match: /webhook|callback|notify/i, purpose: 'Webhook or callback', risks: 'SSRF, replay attacks', suggestions: ['SSRF via URL params', 'Replay attack', 'Signature bypass'] },
+    { match: /firestore|firebase/i, purpose: 'Firebase/Firestore backend', risks: 'Rules misconfiguration, data exposure', suggestions: ['Firestore rules bypass', 'IDOR on document IDs', 'Unauthenticated access'] },
+    { match: /cdn-cgi|rum|cloudflare/i, purpose: 'CDN / RUM analytics', risks: 'Limited - typically third-party', suggestions: ['Payload injection in RUM data', 'Check for sensitive headers'] },
+  ];
+
+  let match = patterns.find((p) => p.match.test(path) || p.match.test(url));
+  if (!match) {
+    match = {
+      purpose: method === 'POST' ? 'Data submission' : 'Data retrieval',
+      risks: 'Depends on implementation',
+      suggestions: ['SQL Injection', 'IDOR', 'Auth bypass', 'Rate limit tests'],
+    };
+  }
+
+  const pathHint = path.length > 50 ? path.slice(0, 47) + '...' : path;
+  let description = `${method} request to ${escapeHtml(host || 'unknown')}. `;
+  if (body && method === 'POST') {
+    try {
+      const parsed = JSON.parse(body);
+      const keys = Object.keys(parsed).slice(0, 5).join(', ');
+      description += `Request body contains: ${escapeHtml(keys || 'empty')}. `;
+    } catch (_) {}
+  }
+
+  return {
+    path: pathHint,
+    description,
+    purpose: match.purpose,
+    risks: match.risks,
+    suggestions: match.suggestions,
   };
-  chrome.storage.local.set({ savedRequest: data }, () => {
-    alert('Request saved to local storage.');
-  });
 }
 
-/**
- * Placeholder: Load request from storage
- */
-function loadRequest() {
-  chrome.storage.local.get(['savedRequest'], (result) => {
-    const data = result.savedRequest;
-    if (!data) {
-      alert('No saved request found.');
-      return;
-    }
-    methodSelect.value = data.method || 'GET';
-    urlInput.value = data.url || '';
-    headersEditor.innerHTML = '';
-    Object.entries(data.headers || {}).forEach(([k, v]) => addHeaderRow(k, v));
-    addHeaderRow('', '');
-    bodyEditor.value = data.body || '';
-    alert('Request loaded.');
-  });
-}
-
-/**
- * Generate cURL command
- */
 /**
  * Get headers suitable for fetch/cURL (excludes HTTP/2 pseudo-headers)
  */
@@ -786,36 +902,6 @@ function setupCopyModal() {
   modal.addEventListener('click', (e) => {
     if (e.target === modal) modal.classList.add('hidden');
   });
-}
-
-/**
- * Generate cURL command and copy to clipboard (from editor)
- */
-function generateCurl() {
-  const method = methodSelect.value;
-  const url = urlInput.value?.trim();
-  const headers = getValidHeaders();
-  const body = bodyEditor.value?.trim();
-
-  if (!url) {
-    showToast('Please enter a URL first.');
-    return;
-  }
-
-  const escapeForShell = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "'\\''");
-  let curl = `curl -X ${method} '${escapeForShell(url)}'`;
-
-  Object.entries(headers).forEach(([k, v]) => {
-    curl += ` \\\n  -H '${escapeForShell(k)}: ${escapeForShell(v)}'`;
-  });
-
-  if (body && ['POST', 'PUT', 'PATCH'].includes(method)) {
-    curl += ` \\\n  -d '${escapeForShell(body)}'`;
-  }
-
-  copyToClipboard(curl)
-    .then(() => showToast('cURL copied to clipboard'))
-    .catch(() => showCopyModal(curl));
 }
 
 /**
@@ -995,15 +1081,15 @@ async function runSecurityScan() {
         const ls = {};
         for (let i = 0; i < Math.min(localStorage.length, 20); i++) {
           const k = localStorage.key(i);
-          ls[k] = (localStorage.getItem(k) || '').slice(0, 50);
+          ls[k] = localStorage.getItem(k) || '';
         }
         const ss = {};
         for (let i = 0; i < Math.min(sessionStorage.length, 20); i++) {
           const k = sessionStorage.key(i);
-          ss[k] = (sessionStorage.getItem(k) || '').slice(0, 50);
+          ss[k] = sessionStorage.getItem(k) || '';
         }
         const scripts = [...document.querySelectorAll('script:not([src])')].map((s) => s.textContent || '').filter(Boolean);
-        return { url: location.href, localStorage: ls, sessionStorage: ss, inlineScripts: scripts };
+        return { url: location.href, origin: location.origin, localStorage: ls, sessionStorage: ss, inlineScripts: scripts };
       },
     });
 
@@ -1013,16 +1099,27 @@ async function runSecurityScan() {
       return;
     }
 
+    const pageHost = new URL(data.url).hostname;
     const sensitiveKeys = /token|auth|secret|password|key|credential|session|jwt/i;
 
     Object.entries(data.localStorage || {}).forEach(([k, v]) => {
       if (sensitiveKeys.test(k)) {
-        findings.push({ severity: 'medium', category: 'storage', msg: `localStorage["${k}"] may contain sensitive data` });
+        findings.push({
+          severity: 'medium',
+          category: 'storage',
+          msg: `localStorage["${k}"] on ${pageHost}`,
+          detail: { type: 'localStorage', key: k, value: v, domain: pageHost },
+        });
       }
     });
     Object.entries(data.sessionStorage || {}).forEach(([k, v]) => {
       if (sensitiveKeys.test(k)) {
-        findings.push({ severity: 'medium', category: 'storage', msg: `sessionStorage["${k}"] may contain sensitive data` });
+        findings.push({
+          severity: 'medium',
+          category: 'storage',
+          msg: `sessionStorage["${k}"] on ${pageHost}`,
+          detail: { type: 'sessionStorage', key: k, value: v, domain: pageHost },
+        });
       }
     });
 
@@ -1030,7 +1127,7 @@ async function runSecurityScan() {
     if (/addEventListener\s*\(\s*['"]message['"]|onmessage\s*=|\.on\s*\(\s*['"]message['"]/i.test(allScripts)) {
       const hasOrigin = /\.origin\s*===|event\.origin|e\.origin|origin\s*!==|\.startsWith\s*\(\s*['"]https?:/i.test(allScripts);
       if (!hasOrigin) {
-        findings.push({ severity: 'high', category: 'postMessage', msg: 'postMessage listener may lack origin validation' });
+        findings.push({ severity: 'high', category: 'postMessage', msg: 'postMessage listener may lack origin validation', detail: null });
       }
     }
 
@@ -1041,7 +1138,13 @@ async function runSecurityScan() {
         if (!c.secure && data.url.startsWith('https')) issues.push('missing Secure');
         if (!c.httpOnly && sensitiveKeys.test(c.name)) issues.push('sensitive cookie not httpOnly');
         if (issues.length) {
-          findings.push({ severity: 'low', category: 'cookies', msg: `Cookie "${c.name}": ${issues.join(', ')}` });
+          const domain = c.domain || pageHost;
+          findings.push({
+            severity: 'low',
+            category: 'cookies',
+            msg: `Cookie "${c.name}" on ${domain}: ${issues.join(', ')}`,
+            detail: { name: c.name, domain, path: c.path, secure: c.secure, httpOnly: c.httpOnly, value: (c.value || '').slice(0, 100) },
+          });
         }
       });
     } catch (_) {}
@@ -1051,13 +1154,24 @@ async function runSecurityScan() {
       const url = r.url || r.request?.url;
       if (!url || seen.has(url)) return;
       seen.add(url);
+      const domain = (() => { try { return new URL(url).hostname; } catch (_) { return url.slice(0, 40); } })();
       const resp = r.response || {};
       const headers = (resp.headers || []).reduce((a, h) => { a[h.name?.toLowerCase()] = h.value; return a; }, {});
       if (!headers['content-security-policy']) {
-        findings.push({ severity: 'low', category: 'headers', msg: `No CSP header: ${url.slice(0, 60)}...` });
+        findings.push({
+          severity: 'low',
+          category: 'headers',
+          msg: `${domain}: No CSP header`,
+          detail: { url, domain, missing: 'Content-Security-Policy' },
+        });
       }
       if (!headers['x-frame-options'] && !headers['content-security-policy']) {
-        findings.push({ severity: 'low', category: 'headers', msg: `No X-Frame-Options: ${url.slice(0, 60)}...` });
+        findings.push({
+          severity: 'low',
+          category: 'headers',
+          msg: `${domain}: No X-Frame-Options`,
+          detail: { url, domain, missing: 'X-Frame-Options' },
+        });
       }
     });
 
@@ -1071,14 +1185,45 @@ async function runSecurityScan() {
       if (!byCat[f.category]) byCat[f.category] = [];
       byCat[f.category].push(f);
     });
+
     const html = Object.entries(byCat).map(([cat, items]) => {
-      const list = [...new Set(items.map((i) => i.msg))].map((m) => {
-        const sev = items.find((i) => i.msg === m)?.severity || 'low';
-        return `<li class="finding severity-${sev}">${escapeHtml(m)}</li>`;
+      const list = items.map((f, idx) => {
+        const id = `finding-${cat}-${idx}`;
+        const hasDetail = f.detail != null;
+        let detailHtml = '';
+        if (hasDetail && f.detail) {
+          const d = f.detail;
+          if (d.type === 'localStorage' || d.type === 'sessionStorage') {
+            detailHtml = `<pre>Key: ${escapeHtml(d.key)}\nDomain: ${escapeHtml(d.domain)}\nValue: ${escapeHtml(String(d.value).slice(0, 500))}${d.value.length > 500 ? '...' : ''}</pre>`;
+          } else if (d.name) {
+            detailHtml = `<pre>Name: ${escapeHtml(d.name)}\nDomain: ${escapeHtml(d.domain)}\nPath: ${escapeHtml(d.path || '')}\nSecure: ${d.secure}\nHttpOnly: ${d.httpOnly}\nValue: ${escapeHtml(String(d.value || '').slice(0, 200))}</pre>`;
+          } else if (d.url) {
+            detailHtml = `<pre>URL: ${escapeHtml(d.url)}\nMissing: ${escapeHtml(d.missing || '')}</pre>`;
+          }
+        }
+        return `
+          <li class="finding severity-${f.severity} ${hasDetail ? 'expandable' : ''}" data-id="${id}">
+            <div class="finding-summary">
+              <span class="finding-msg">${escapeHtml(f.msg)}</span>
+              ${hasDetail ? '<span class="expand-icon">▼</span>' : ''}
+            </div>
+            ${hasDetail ? `<div class="finding-detail" id="${id}">${detailHtml}</div>` : ''}
+          </li>`;
       }).join('');
       return `<div class="finding-group"><h4>${escapeHtml(cat)}</h4><ul>${list}</ul></div>`;
     }).join('');
     resultsEl.innerHTML = html;
+
+    resultsEl.querySelectorAll('.finding.expandable').forEach((el) => {
+      el.addEventListener('click', () => {
+        const detail = el.querySelector('.finding-detail');
+        const icon = el.querySelector('.expand-icon');
+        if (detail && icon) {
+          detail.classList.toggle('expanded');
+          icon.textContent = detail.classList.contains('expanded') ? '▲' : '▼';
+        }
+      });
+    });
   } catch (err) {
     resultsEl.innerHTML = `<p class="scanner-error">${escapeHtml(err.message)}</p>`;
   }
@@ -1100,7 +1245,12 @@ function sendToIntruder() {
 
   document.getElementById('intruderMethod').value = method;
   document.getElementById('intruderUrl').value = url;
-  document.getElementById('intruderBody').value = body || '';
+  const bodyText = body || '';
+  document.getElementById('intruderBody').value = bodyText;
+  const intruderPrettyView = document.getElementById('intruderBodyPrettyView');
+  if (intruderPrettyView && !intruderPrettyView.classList.contains('hidden')) {
+    intruderPrettyView.value = formatBodyForDisplay(bodyText);
+  }
 
   const intruderHeaders = document.getElementById('intruderHeaders');
   intruderHeaders.innerHTML = '';
@@ -1128,9 +1278,12 @@ function addIntruderHeaderRow(key = '', value = '') {
 function getIntruderPayloads() {
   const type = document.getElementById('payloadType').value;
   if (type === 'numbers') {
-    const from = parseInt(document.getElementById('payloadFrom').value, 10) || 0;
-    const to = parseInt(document.getElementById('payloadTo').value, 10) || 10;
-    const step = parseInt(document.getElementById('payloadStep').value, 10) || 1;
+    let from = parseInt(document.getElementById('payloadFrom').value, 10);
+    let to = parseInt(document.getElementById('payloadTo').value, 10);
+    const step = Math.abs(parseInt(document.getElementById('payloadStep').value, 10) || 1);
+    if (isNaN(from)) from = 0;
+    if (isNaN(to)) to = 10;
+    if (from > to) [from, to] = [to, from];
     const payloads = [];
     for (let i = from; i <= to; i += step) payloads.push(String(i));
     return payloads;
@@ -1139,12 +1292,15 @@ function getIntruderPayloads() {
   return text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
+const PAYLOAD_MARKER_REGEX = /(§[^§]*§|\$[^$]*\$)/g;
+const HAS_MARKER_REGEX = /(§[^§]*§|\$[^$]*\$)/;
+
 /**
- * Replace §marker§ with payload in string
+ * Replace §marker§ or $marker$ with payload in string
  */
 function replacePayloadMarkers(str, payload) {
   if (!str) return str;
-  return String(str).replace(/\§[^§]*\§/g, payload);
+  return String(str).replace(PAYLOAD_MARKER_REGEX, payload);
 }
 
 /**
@@ -1181,10 +1337,15 @@ async function runIntruderAttack() {
 
   const method = document.getElementById('intruderMethod').value;
   const url = document.getElementById('intruderUrl').value?.trim();
-  const bodyRaw = document.getElementById('intruderBody').value?.trim();
+  const intruderBodyEl = document.getElementById('intruderBody');
+  const intruderPrettyEl = document.getElementById('intruderBodyPrettyView');
+  if (intruderPrettyEl && !intruderPrettyEl.classList.contains('hidden')) {
+    intruderBodyEl.value = unformatBodyFromDisplay(intruderPrettyEl.value);
+  }
+  const bodyRaw = intruderBodyEl.value?.trim();
 
   if (!url) {
-    showToast('Enter a URL with §markers§.');
+    showToast('Enter a URL.');
     return;
   }
 
@@ -1195,6 +1356,12 @@ async function runIntruderAttack() {
     if (key && isValidHeaderName(key)) headers[key] = val;
   });
 
+  const hasMarker = (s) => s && HAS_MARKER_REGEX.test(String(s));
+  if (!hasMarker(url) && !hasMarker(bodyRaw) && !Object.values(headers).some(hasMarker)) {
+    showToast('Add §markers§ or $markers$ in URL, body, or headers.');
+    return;
+  }
+
   document.getElementById('startAttackBtn').classList.add('hidden');
   document.getElementById('stopAttackBtn').classList.remove('hidden');
   document.getElementById('intruderResultsBody').innerHTML = '';
@@ -1202,44 +1369,47 @@ async function runIntruderAttack() {
 
   intruderAbortController = new AbortController();
   const results = [];
+  const concurrency = Math.min(20, Math.max(1, parseInt(document.getElementById('intruderConcurrency')?.value, 10) || 5));
+  const delayMs = Math.min(5000, Math.max(0, parseInt(document.getElementById('intruderDelay')?.value, 10) || 0));
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  for (let i = 0; i < payloads.length; i++) {
+  for (let batchStart = 0; batchStart < payloads.length; batchStart += concurrency) {
     if (intruderAbortController?.signal.aborted) break;
 
-    const payload = payloads[i];
-    const reqUrl = replacePayloadMarkers(url, payload);
-    const reqBody = bodyRaw ? replacePayloadMarkers(bodyRaw, payload) : null;
+    const batch = payloads.slice(batchStart, batchStart + concurrency);
+    const batchResults = await Promise.all(
+      batch.map(async (payload, batchIdx) => {
+        const i = batchStart + batchIdx;
+        const reqUrl = replacePayloadMarkers(url, payload);
+        const reqBody = bodyRaw ? replacePayloadMarkers(bodyRaw, payload) : null;
+        const reqHeaders = { ...headers };
+        Object.keys(reqHeaders).forEach((k) => {
+          reqHeaders[k] = replacePayloadMarkers(reqHeaders[k], payload);
+        });
+        let res;
+        try {
+          res = await replayRequestFromPanel({ method, url: reqUrl, headers: reqHeaders, body: reqBody });
+        } catch (err) {
+          res = { error: err.message, status: 0, body: '', timing: { duration: 0 } };
+        }
+        return {
+          index: i + 1,
+          payload,
+          status: res.status || 0,
+          length: res.body ? new Blob([res.body]).size : 0,
+          duration: Math.round((res.timing?.duration || 0)),
+          body: res.body || res.error || '',
+        };
+      })
+    );
 
-    const reqHeaders = { ...headers };
-    Object.keys(reqHeaders).forEach((k) => {
-      reqHeaders[k] = replacePayloadMarkers(reqHeaders[k], payload);
-    });
-
-    const start = performance.now();
-    let res;
-    try {
-      res = await replayRequestFromPanel({
-        method,
-        url: reqUrl,
-        headers: reqHeaders,
-        body: reqBody,
-      });
-    } catch (err) {
-      res = { error: err.message, status: 0, body: '', timing: { duration: 0 } };
-    }
-    const duration = Math.round((res.timing?.duration || 0));
-
-    results.push({
-      index: i + 1,
-      payload,
-      status: res.status || 0,
-      length: res.body ? new Blob([res.body]).size : 0,
-      duration,
-      body: res.body || res.error || '',
-    });
-
-    document.getElementById('intruderStatus').textContent = `Running ${i + 1}/${payloads.length}...`;
+    results.push(...batchResults);
+    document.getElementById('intruderStatus').textContent = `Running ${Math.min(batchStart + concurrency, payloads.length)}/${payloads.length}...`;
     renderIntruderResults(results);
+
+    if (delayMs > 0 && batchStart + concurrency < payloads.length) {
+      await delay(delayMs);
+    }
   }
 
   document.getElementById('startAttackBtn').classList.remove('hidden');

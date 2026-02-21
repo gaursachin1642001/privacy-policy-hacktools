@@ -539,7 +539,14 @@ body {
 .number-range {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.number-range label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-right: 2px;
 }
 
 .number-range input {
@@ -550,6 +557,41 @@ body {
   border-radius: 4px;
   color: var(--text-primary);
   font-family: inherit;
+}
+
+.intruder-speed {
+  margin-bottom: 12px;
+}
+
+.intruder-speed label {
+  display: block;
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.speed-row span {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.speed-row input {
+  width: 60px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 11px;
 }
 
 .intruder-actions {
@@ -738,6 +780,47 @@ body {
 .finding-group li.severity-low {
   background: rgba(78, 201, 176, 0.1);
   border-left: 3px solid var(--accent-green);
+}
+
+.finding-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.finding.expandable {
+  cursor: pointer;
+}
+
+.finding.expandable:hover .finding-summary {
+  opacity: 0.9;
+}
+
+.expand-icon {
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.finding-detail {
+  display: none;
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.finding-detail.expanded {
+  display: block;
+}
+
+.finding-detail pre {
+  margin: 0;
+  font-family: inherit;
 }
 
 .editor-section,
@@ -942,6 +1025,18 @@ body {
 .body-editor:focus {
   outline: none;
   border-color: var(--accent-blue);
+}
+
+.body-editor.hidden {
+  display: none;
+}
+
+.body-pretty-view {
+  color: var(--accent-green);
+}
+
+.body-pretty-view.hidden {
+  display: none;
 }
 
 /* Response */
