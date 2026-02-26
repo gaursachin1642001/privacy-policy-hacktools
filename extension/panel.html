@@ -3,15 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>rep+ HTTP Repeater</title>
+  <title>HackTools++</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="app">
     <!-- Left Sidebar: Request List -->
-    <aside class="sidebar requests-sidebar">
+    <aside id="requestsSidebar" class="sidebar requests-sidebar">
       <div class="sidebar-header">
-        <h2>Captured Requests</h2>
+        <div class="sidebar-title-row">
+          <h2>Captured Requests</h2>
+          <button type="button" id="toggleRequestsSidebarBtn" class="sidebar-toggle-btn" title="Minimize Captured Requests">«</button>
+        </div>
         <div class="search-filter">
           <input type="text" id="searchInput" placeholder="Search URL..." class="search-input">
           <select id="methodFilter" class="filter-select">
@@ -65,6 +68,8 @@
         <button type="button" class="mode-tab" data-mode="intruder">Intruder</button>
         <button type="button" class="mode-tab" data-mode="decoder">Decoder</button>
         <button type="button" class="mode-tab" data-mode="scanner">Scanner</button>
+        <button type="button" class="mode-tab" data-mode="tech">Tech Detector</button>
+        <button type="button" class="mode-tab" data-mode="owasp">OWASP Finding</button>
       </div>
 
       <div id="repeaterPanel" class="mode-panel">
@@ -73,8 +78,13 @@
           <h3>Request Editor</h3>
           <div class="editor-actions">
             <button id="sendBtn" class="btn btn-primary">Send</button>
+            <button id="duplicateTabBtn" class="btn btn-secondary">Duplicate Request</button>
+            <button id="newRepeaterTabBtn" class="btn btn-secondary">+ New Tab</button>
             <button id="sendToIntruderBtn" class="btn btn-secondary">Send to Intruder</button>
           </div>
+        </div>
+        <div class="repeater-tabs-bar">
+          <div id="repeaterTabs" class="repeater-tabs"></div>
         </div>
         <div class="request-editor">
           <div class="editor-row">
@@ -101,6 +111,10 @@
             </div>
             <textarea id="bodyEditor" class="body-editor" placeholder="Request body (JSON, form data, etc.)"></textarea>
             <textarea id="bodyPrettyView" class="body-editor body-pretty-view hidden"></textarea>
+          </div>
+          <div class="editor-section-inner repeater-history-section">
+            <h4>Request History <button id="clearRepeaterHistoryBtn" class="btn btn-small">Clear</button></h4>
+            <ul id="repeaterHistoryList" class="repeater-history-list"></ul>
           </div>
         </div>
       </div>
@@ -213,6 +227,7 @@
                     <th>Status</th>
                     <th>Length</th>
                     <th>Time (ms)</th>
+                    <th>Diff</th>
                     <th>Response</th>
                   </tr>
                 </thead>
@@ -256,17 +271,75 @@
         <div class="scanner-layout">
           <div class="section-header">
             <h3>Client-Side Security Scan</h3>
-            <button type="button" id="runScanBtn" class="btn btn-primary">Run Scan</button>
+            <div class="scanner-actions">
+              <label class="scanner-auto-toggle">
+                <input type="checkbox" id="scannerAutoToggle" checked>
+                <span>Auto Scan</span>
+              </label>
+              <select id="scannerSeverityFilter" class="filter-select scanner-filter-select">
+                <option value="">All Severities</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <input id="scannerSearchInput" class="search-input scanner-search-input" placeholder="Search findings...">
+              <button type="button" id="exportScannerJsonBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="exportScannerCsvBtn" class="btn btn-secondary">Export CSV</button>
+              <button type="button" id="runScanBtn" class="btn btn-primary">Run Scan</button>
+            </div>
           </div>
+          <div id="scannerMeta" class="scanner-meta"></div>
+          <div id="scannerSuppressions" class="scanner-suppressions hidden"></div>
           <div id="scannerResults" class="scanner-results"></div>
+        </div>
+      </div>
+
+      <div id="techPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>Technology Detector (Passive)</h3>
+            <div class="scanner-actions">
+              <label class="scanner-auto-toggle">
+                <input type="checkbox" id="techLiveCveToggle">
+                Live CVE
+              </label>
+              <button type="button" id="runTechDetectBtn" class="btn btn-primary">Run Detect</button>
+              <button type="button" id="enrichTechCveBtn" class="btn btn-secondary">Enrich CVEs</button>
+              <button type="button" id="clearTechCveCacheBtn" class="btn btn-secondary">Clear CVE Cache</button>
+              <button type="button" id="copyTechReconBtn" class="btn btn-secondary">Copy Recon Bundle</button>
+              <button type="button" id="exportTechJsonBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="exportTechCsvBtn" class="btn btn-secondary">Export CSV</button>
+            </div>
+          </div>
+          <div id="techMeta" class="scanner-meta"></div>
+          <div id="techResults" class="scanner-results"></div>
+        </div>
+      </div>
+
+      <div id="owaspPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>OWASP Findings</h3>
+            <div class="scanner-actions">
+              <button type="button" id="refreshOwaspBtn" class="btn btn-primary">Refresh</button>
+              <button type="button" id="exportOwaspJsonBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="exportOwaspCsvBtn" class="btn btn-secondary">Export CSV</button>
+              <button type="button" id="copyOwaspMdBtn" class="btn btn-secondary">Copy Markdown</button>
+            </div>
+          </div>
+          <div id="owaspMeta" class="scanner-meta"></div>
+          <div id="owaspResults" class="scanner-results"></div>
         </div>
       </div>
     </main>
 
     <!-- Right Sidebar: AI Assist -->
-    <aside class="sidebar ai-sidebar">
+    <aside id="aiSidebar" class="sidebar ai-sidebar">
       <div class="sidebar-header">
-        <h2>AI Assist</h2>
+        <div class="sidebar-title-row">
+          <h2>AI Assist</h2>
+          <button type="button" id="toggleAiSidebarBtn" class="sidebar-toggle-btn" title="Minimize AI Assist">»</button>
+        </div>
       </div>
       <div class="ai-content">
         <div class="ai-section">

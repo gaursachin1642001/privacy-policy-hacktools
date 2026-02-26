@@ -1,5 +1,5 @@
 /**
- * rep+ Background Service Worker
+ * HackTools++ Background Service Worker
  * Handles request replay via fetch (no proxy required)
  */
 

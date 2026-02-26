@@ -1,9 +1,9 @@
 /**
- * rep+ DevTools Bootstrap
- * Creates the custom "rep+" tab in Chrome DevTools
+ * HackTools++ DevTools Bootstrap
+ * Creates the custom "HackTools++" tab in Chrome DevTools
  */
 chrome.devtools.panels.create(
-  'HackTools+',
+  'HackTools++',
   '',
   'panel.html',
   (panel) => {

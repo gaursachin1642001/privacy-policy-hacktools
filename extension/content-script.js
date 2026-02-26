@@ -1,5 +1,5 @@
 /**
- * rep+ Content Script
+ * HackTools++ Content Script
  * Runs in page context - can be used for future enhancements
  * (e.g., injecting request interceptors, DOM inspection for security testing)
  *

@@ -1,27 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "rep+ HTTP Repeater",
+  "name": "HackTools++",
   "version": "1.0.0",
-  "description": "Lightweight HTTP Repeater inside Chrome DevTools - like Burp Repeater in your browser",
-  "devtools_page": "devtools.html",
-  "permissions": [
-    "storage",
-    "activeTab",
-    "scripting",
-    "webRequest",
-    "cookies"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
-  "background": {
-    "service_worker": "background.js"
+  "description": "HackTools++: Repeater, Intruder, Decoder, and Scanner in DevTools. Capture, edit, and replay HTTP requests for testing.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content-script.js"],
-      "run_at": "document_start"
-    }
-  ]
+  "devtools_page": "devtools.html",
+  "permissions": ["storage", "scripting", "cookies"],
+  "host_permissions": ["<all_urls>"]
 }
