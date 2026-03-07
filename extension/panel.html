@@ -69,6 +69,7 @@
         <button type="button" class="mode-tab" data-mode="decoder">Decoder</button>
         <button type="button" class="mode-tab" data-mode="scanner">Scanner</button>
         <button type="button" class="mode-tab" data-mode="tech">Tech Detector</button>
+        <button type="button" class="mode-tab" data-mode="secret">Secret Scanner</button>
         <button type="button" class="mode-tab" data-mode="owasp">OWASP Finding</button>
       </div>
 
@@ -313,6 +314,49 @@
           </div>
           <div id="techMeta" class="scanner-meta"></div>
           <div id="techResults" class="scanner-results"></div>
+        </div>
+      </div>
+
+      <div id="secretPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>AI Secret Scanner (Local)</h3>
+            <div class="scanner-actions">
+              <label class="scanner-auto-toggle">
+                <input type="checkbox" id="secretApiJsonToggle">
+                Scan API JSON
+              </label>
+              <select id="secretRulePackSelect" class="filter-select scanner-filter-select">
+                <option value="core">Core Rules</option>
+                <option value="extended" selected>Extended Rules</option>
+                <option value="aggressive">Aggressive Rules</option>
+              </select>
+              <label class="scanner-auto-toggle" title="May send detected secrets to provider APIs for validation">
+                <input type="checkbox" id="secretRemoteValidationToggle">
+                Remote Validate (Dangerous)
+              </label>
+              <select id="secretDomainFilter" class="filter-select scanner-filter-select">
+                <option value="">All Domains</option>
+              </select>
+              <select id="secretTypeFilter" class="filter-select scanner-filter-select">
+                <option value="">All Secret Types</option>
+              </select>
+              <select id="secretConfidenceFilter" class="filter-select scanner-filter-select">
+                <option value="">All Confidence</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+              <input id="secretSearchInput" class="search-input scanner-search-input" placeholder="Search files, types, snippets...">
+              <button type="button" id="exportSecretJsonBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="exportSecretCsvBtn" class="btn btn-secondary">Export CSV</button>
+              <button type="button" id="copySecretMdBtn" class="btn btn-secondary">Copy Markdown</button>
+              <button type="button" id="validateSecretVisibleBtn" class="btn btn-secondary">Validate Visible</button>
+              <button type="button" id="clearSecretFindingsBtn" class="btn btn-secondary">Clear</button>
+            </div>
+          </div>
+          <div id="secretMeta" class="scanner-meta"></div>
+          <div id="secretResults" class="scanner-results"></div>
         </div>
       </div>
 

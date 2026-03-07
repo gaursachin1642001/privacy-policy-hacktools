@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "HackTools++",
+  "name": "HackTools++ UAT",
   "version": "1.0.0",
   "description": "HackTools++: Repeater, Intruder, Decoder, and Scanner in DevTools. Capture, edit, and replay HTTP requests for testing.",
   "icons": {
