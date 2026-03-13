@@ -47,6 +47,23 @@ let techLastRunMeta = {
   cveRateLimited: false,
   lastRunAt: null,
 };
+let wordpressAuditFindingsCache = [];
+let wordpressEndpointFindingsCache = [];
+let wordpressEndpointScanRunning = false;
+let wordpressEndpointScanCancelRequested = false;
+let wordpressAuditMeta = {
+  total: 0,
+  core: 0,
+  plugins: 0,
+  themes: 0,
+  exposures: 0,
+  endpointHits: 0,
+  cveHits: 0,
+  high: 0,
+  medium: 0,
+  low: 0,
+  lastRunAt: null,
+};
 let owaspSummaryCache = null;
 let secretFindingsCache = [];
 let secretFilteredFindingsCache = [];
@@ -55,6 +72,8 @@ let secretScanApiJsonEnabled = false;
 let secretRulePack = 'extended';
 let secretRemoteValidationEnabled = false;
 let secretValidationAudit = [];
+let secretHiddenColumns = new Set();
+const SECRET_ALL_COLUMNS = ['type', 'confidence', 'domain', 'fileKind', 'filePath', 'value', 'action'];
 let secretScanQueue = [];
 let secretScanRunning = false;
 let secretQueueTimer = null;
@@ -69,6 +88,19 @@ let secretScanMeta = {
   validatedInactive: 0,
   validatedError: 0,
   lastScanAt: null,
+};
+let wsFrames = [];
+let wsConnections = [];
+let wsSelectedConnectionId = '';
+let wsSelectedFrameUid = '';
+let wsFrameCounter = 0;
+let wsCapturedFrameUids = new Set();
+let wsPollTimer = null;
+let wsInterceptorInstalled = false;
+let wsInterceptConfig = {
+  blockOutgoing: false,
+  replaceFrom: '',
+  replaceTo: '',
 };
 
 // DOM Elements
@@ -107,8 +139,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupDecoder();
   setupScanner();
   setupTechDetector();
+  setupWordpressAudit();
+  setupWebSocketTools();
   setupSecretScanner();
-  setupOwaspFindings();
   initRepeaterWorkspace();
   renderRepeaterHistory();
   renderRequestList();
@@ -129,7 +162,7 @@ function shouldCaptureRequest(url) {
   }
 
   // Ignore internal/devtools/extension placeholder traffic.
-  if (protocol !== 'http:' && protocol !== 'https:') return false;
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(protocol)) return false;
   if (!host || host === 'invalid') return false;
 
   // Block takes precedence
@@ -147,6 +180,31 @@ function shouldCaptureRequest(url) {
     if (host === d || host.endsWith('.' + d)) return true;
   }
   return false;
+}
+
+function isWebSocketUrl(url) {
+  try {
+    const p = new URL(url).protocol.toLowerCase();
+    return p === 'ws:' || p === 'wss:';
+  } catch (_) {
+    return false;
+  }
+}
+
+function addCapturedRequest(entry, options = {}) {
+  const { autoScan = true } = options;
+  capturedRequests.unshift(entry);
+  if (capturedRequests.length > 800) capturedRequests.pop();
+  renderRequestList();
+  if (autoScan) scheduleAutoSecurityScan();
+}
+
+function pruneWsFrameCapturedRequests() {
+  const before = capturedRequests.length;
+  capturedRequests = capturedRequests.filter((r) => r.kind !== 'ws-frame');
+  if (capturedRequests.length !== before) {
+    renderRequestList();
+  }
 }
 
 function isLikelyJavaScriptRequest(request) {
@@ -189,10 +247,12 @@ function detectBuildArtifactKind(url) {
 function setupNetworkCapture() {
   chrome.devtools.network.onRequestFinished.addListener((request) => {
     if (!shouldCaptureRequest(request.request.url)) return;
+    const wsUrl = isWebSocketUrl(request.request.url);
 
     const entry = {
       id: Date.now() + Math.random(),
-      method: request.request.method,
+      kind: wsUrl ? 'ws-handshake' : 'http',
+      method: wsUrl ? 'WS' : request.request.method,
       url: request.request.url,
       status: request.response.status,
       statusText: request.response.statusText,
@@ -209,10 +269,20 @@ function setupNetworkCapture() {
         content: request.response.content,
       },
     };
-    capturedRequests.unshift(entry);
-    if (capturedRequests.length > 500) capturedRequests.pop();
-    renderRequestList();
-    scheduleAutoSecurityScan();
+    addCapturedRequest(entry, { autoScan: !wsUrl });
+    if (wsUrl) {
+      pushWsFrame({
+        ts: Date.now(),
+        direction: 'meta',
+        id: '',
+        url: request.request.url,
+        payload: `handshake status=${request.response?.status || 0}`,
+      });
+      if (!document.getElementById('websocketPanel')?.classList.contains('hidden')) {
+        renderWebSocketMeta();
+        renderWebSocketResults();
+      }
+    }
 
     const jsLike = isLikelyJavaScriptRequest(request);
     const apiJsonLike = isLikelyApiJsonRequest(request);
@@ -244,7 +314,7 @@ function scheduleAutoSecurityScan() {
  */
 async function loadScopeBlockLists() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['scopeDomains', 'blockDomains', 'scannerAutoEnabled', 'scannerSuppressions', 'techLiveCveEnabled', 'techCveCache', 'secretScanApiJsonEnabled', 'secretRulePack', 'secretRemoteValidationEnabled'], (result) => {
+    chrome.storage.local.get(['scopeDomains', 'blockDomains', 'scannerAutoEnabled', 'scannerSuppressions', 'techLiveCveEnabled', 'techCveCache', 'secretScanApiJsonEnabled', 'secretRulePack', 'secretRemoteValidationEnabled', 'secretHiddenColumns', 'wsInterceptConfig'], (result) => {
       scopeDomains = result.scopeDomains || [];
       blockDomains = result.blockDomains || [];
       scannerAutoEnabled = result.scannerAutoEnabled !== false;
@@ -254,6 +324,13 @@ async function loadScopeBlockLists() {
       secretScanApiJsonEnabled = result.secretScanApiJsonEnabled === true;
       secretRulePack = ['core', 'extended', 'aggressive'].includes(result.secretRulePack) ? result.secretRulePack : 'extended';
       secretRemoteValidationEnabled = result.secretRemoteValidationEnabled === true;
+      const rawSecretHiddenColumns = Array.isArray(result.secretHiddenColumns) ? result.secretHiddenColumns : [];
+      secretHiddenColumns = new Set(rawSecretHiddenColumns.filter((k) => SECRET_ALL_COLUMNS.includes(k)));
+      wsInterceptConfig = {
+        blockOutgoing: result.wsInterceptConfig?.blockOutgoing === true,
+        replaceFrom: String(result.wsInterceptConfig?.replaceFrom || ''),
+        replaceTo: String(result.wsInterceptConfig?.replaceTo || ''),
+      };
       const autoToggle = document.getElementById('scannerAutoToggle');
       if (autoToggle) autoToggle.checked = scannerAutoEnabled;
       const secretApiToggle = document.getElementById('secretApiJsonToggle');
@@ -281,6 +358,8 @@ function saveScopeBlockLists() {
     secretScanApiJsonEnabled,
     secretRulePack,
     secretRemoteValidationEnabled,
+    secretHiddenColumns: [...secretHiddenColumns],
+    wsInterceptConfig,
   });
 }
 
@@ -793,13 +872,30 @@ function renderRequestList() {
     const li = document.createElement('li');
     li.className = `request-item ${selectedRequest?.id === req.id ? 'selected' : ''}`;
     li.dataset.requestId = req.id;
-    const statusClass = req.status >= 500 ? 'status-5xx' : req.status >= 400 ? 'status-4xx' : req.status >= 300 ? 'status-3xx' : 'status-2xx';
+    const isWs = req.kind === 'ws-frame' || req.kind === 'ws-handshake';
+    const statusClass = isWs
+      ? 'status-3xx'
+      : req.status >= 500
+        ? 'status-5xx'
+        : req.status >= 400
+          ? 'status-4xx'
+          : req.status >= 300
+            ? 'status-3xx'
+            : 'status-2xx';
+    const methodLabel = isWs
+      ? `WS ${String(req.ws?.direction || '').toUpperCase() || 'LINK'}`
+      : req.method;
+    const metaRight = isWs
+      ? `${escapeHtml(req.ws?.connectionId || 'socket')} · ${escapeHtml(req.time)}`
+      : escapeHtml(req.time);
+    const copyBtn = isWs ? '' : '<button type="button" class="copy-curl-btn" title="Copy as cURL">⎘</button>';
+    const methodClass = isWs ? 'method method-ws' : 'method';
     li.innerHTML = `
       <div class="request-item-main">
-        <div><span class="method">${escapeHtml(req.method)}</span><span class="url">${escapeHtml(req.url)}</span></div>
-        <button type="button" class="copy-curl-btn" title="Copy as cURL">⎘</button>
+        <div><span class="${methodClass}">${escapeHtml(methodLabel)}</span><span class="url">${escapeHtml(req.url)}</span></div>
+        ${copyBtn}
       </div>
-      <div class="meta"><span class="${statusClass}">${req.status}</span> · ${escapeHtml(req.time)}</div>
+      <div class="meta"><span class="${statusClass}">${escapeHtml(String(req.status ?? '—'))}</span> · ${metaRight}</div>
     `;
     requestList.appendChild(li);
   });
@@ -820,6 +916,26 @@ function updateRequestListSelection(req) {
 function selectRequest(req, index) {
   selectedRequest = req;
   selectedRequestIndex = index;
+
+  if (req.kind === 'ws-frame' || req.kind === 'ws-handshake') {
+    updateRequestListSelection(req);
+    switchMode('websocket');
+    if (req.ws?.connectionId) {
+      wsSelectedConnectionId = String(req.ws.connectionId);
+      const wsSelect = document.getElementById('wsConnectionSelect');
+      if (wsSelect) wsSelect.value = wsSelectedConnectionId;
+    }
+    if (typeof req.ws?.payload === 'string') {
+      const wsSendInput = document.getElementById('wsSendInput');
+      if (wsSendInput) wsSendInput.value = req.ws.payload;
+    }
+    if (req.ws?.frameUid) {
+      wsSelectedFrameUid = String(req.ws.frameUid);
+      renderWebSocketResults();
+    }
+    showToast('Opened WebSocket tools for selected capture.');
+    return;
+  }
 
   methodSelect.value = req.request.method;
   urlInput.value = req.request.url;
@@ -1334,18 +1450,568 @@ function switchMode(mode) {
   document.getElementById('decoderPanel').classList.toggle('hidden', mode !== 'decoder');
   document.getElementById('scannerPanel').classList.toggle('hidden', mode !== 'scanner');
   document.getElementById('techPanel').classList.toggle('hidden', mode !== 'tech');
+  document.getElementById('wordpressPanel').classList.toggle('hidden', mode !== 'wordpress');
+  document.getElementById('websocketPanel').classList.toggle('hidden', mode !== 'websocket');
   document.getElementById('secretPanel').classList.toggle('hidden', mode !== 'secret');
-  document.getElementById('owaspPanel').classList.toggle('hidden', mode !== 'owasp');
   if (mode === 'scanner' && scannerFindingsCache.length > 0) {
     applyScannerFilters();
   }
   if (mode === 'tech' && techFindingsCache.length > 0) {
     renderTechResults();
   }
+  if (mode === 'wordpress') {
+    renderWordpressMeta();
+    renderWordpressResults();
+    renderWordpressEndpointResults();
+  }
+  if (mode === 'websocket') {
+    installWebSocketInterceptor()
+      .then(() => refreshWebSocketState().catch(() => {}))
+      .catch(() => {});
+    startWebSocketPolling();
+  } else {
+    stopWebSocketPolling();
+  }
   if (mode === 'secret') {
     applySecretFilters();
   }
-  if (mode === 'owasp') renderOwaspFindings();
+}
+
+function evalInInspectedWindow(expression) {
+  return new Promise((resolve, reject) => {
+    chrome.devtools.inspectedWindow.eval(expression, (result, exceptionInfo) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || 'Eval failed'));
+        return;
+      }
+      if (exceptionInfo?.isException) {
+        reject(new Error(exceptionInfo.value || 'Page evaluation failed'));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+async function installWebSocketInterceptor() {
+  const installer = function () {
+    try {
+      if (window.__hacktoolsWsInstalled) {
+        return { ok: true, already: true };
+      }
+      window.__hacktoolsWsLogs = Array.isArray(window.__hacktoolsWsLogs) ? window.__hacktoolsWsLogs : [];
+      window.__hacktoolsWsSockets = window.__hacktoolsWsSockets || {};
+      window.__hacktoolsWsCounter = Number(window.__hacktoolsWsCounter || 0);
+      window.__hacktoolsWsConfig = Object.assign({ blockOutgoing: false, replaceFrom: '', replaceTo: '' }, window.__hacktoolsWsConfig || {});
+
+      const NativeWebSocket = window.WebSocket;
+      const pushLog = function (entry) {
+        try {
+          const log = Object.assign({ ts: Date.now(), direction: 'meta', payload: '' }, entry || {});
+          window.__hacktoolsWsLogs.push(log);
+          if (window.__hacktoolsWsLogs.length > 1200) window.__hacktoolsWsLogs.splice(0, window.__hacktoolsWsLogs.length - 1200);
+        } catch (_) {}
+      };
+      const payloadView = function (data) {
+        if (typeof data === 'string') return data;
+        if (data == null) return '';
+        if (typeof Blob !== 'undefined' && data instanceof Blob) return `[blob:${data.size}]`;
+        if (data instanceof ArrayBuffer) return `[arraybuffer:${data.byteLength}]`;
+        return `[binary]`;
+      };
+      const ensureSocketId = function (ws, url) {
+        if (ws.__hacktoolsWsId) return ws.__hacktoolsWsId;
+        const id = `ws_${Date.now()}_${++window.__hacktoolsWsCounter}`;
+        ws.__hacktoolsWsId = id;
+        window.__hacktoolsWsSockets[id] = ws;
+        pushLog({ id, url: String(url || ''), direction: 'meta', payload: 'socket-created' });
+        return id;
+      };
+      const wrapSocket = function (ws, url) {
+        const id = ensureSocketId(ws, url);
+
+        ws.addEventListener('open', () => pushLog({ id, url: ws.url || String(url || ''), direction: 'meta', payload: 'open' }));
+        ws.addEventListener('close', (ev) => {
+          pushLog({ id, url: ws.url || String(url || ''), direction: 'meta', payload: `close code=${ev?.code || 0}` });
+          delete window.__hacktoolsWsSockets[id];
+        });
+        ws.addEventListener('error', () => pushLog({ id, url: ws.url || String(url || ''), direction: 'meta', payload: 'error' }));
+        ws.addEventListener('message', (ev) => {
+          pushLog({ id, url: ws.url || String(url || ''), direction: 'in', payload: payloadView(ev?.data) });
+        });
+        return ws;
+      };
+      const originalProtoSend = NativeWebSocket.prototype.send;
+      if (!NativeWebSocket.prototype.__hacktoolsWrappedSend) {
+        NativeWebSocket.prototype.send = function (data) {
+          const id = ensureSocketId(this, this.url || '');
+          const cfg = window.__hacktoolsWsConfig || {};
+          let outgoing = data;
+          if (typeof outgoing === 'string') {
+            if (cfg.blockOutgoing) {
+              pushLog({ id, url: this.url || '', direction: 'blocked', payload: outgoing });
+              return;
+            }
+            if (cfg.replaceFrom) {
+              outgoing = outgoing.split(String(cfg.replaceFrom)).join(String(cfg.replaceTo || ''));
+            }
+          }
+          pushLog({ id, url: this.url || '', direction: 'out', payload: payloadView(outgoing) });
+          return originalProtoSend.call(this, outgoing);
+        };
+        NativeWebSocket.prototype.__hacktoolsWrappedSend = true;
+      }
+
+      const HookedWebSocket = function (url, protocols) {
+        const ws = protocols !== undefined ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+        return wrapSocket(ws, url);
+      };
+      HookedWebSocket.prototype = NativeWebSocket.prototype;
+      HookedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+      HookedWebSocket.OPEN = NativeWebSocket.OPEN;
+      HookedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+      HookedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+      window.WebSocket = HookedWebSocket;
+
+      window.__hacktoolsWsSetConfig = function (cfg) {
+        window.__hacktoolsWsConfig = Object.assign(window.__hacktoolsWsConfig || {}, cfg || {});
+        return window.__hacktoolsWsConfig;
+      };
+      window.__hacktoolsWsSend = function (id, message) {
+        const socket = window.__hacktoolsWsSockets && window.__hacktoolsWsSockets[id];
+        if (!socket) return { ok: false, error: 'Socket not found' };
+        if (socket.readyState !== 1) return { ok: false, error: 'Socket is not open' };
+        socket.send(message);
+        return { ok: true };
+      };
+      window.__hacktoolsWsPull = function (maxCount) {
+        const max = Math.max(1, Math.min(Number(maxCount || 100), 400));
+        const logs = (window.__hacktoolsWsLogs || []).splice(0, max);
+        const sockets = Object.entries(window.__hacktoolsWsSockets || {}).map(([id, ws]) => ({
+          id,
+          url: String(ws?.url || ''),
+          readyState: Number(ws?.readyState ?? 3),
+        }));
+        return { ok: true, logs, sockets, installed: true, config: window.__hacktoolsWsConfig || {} };
+      };
+      window.__hacktoolsWsInstalled = true;
+      pushLog({ direction: 'meta', payload: 'interceptor-installed' });
+      return { ok: true, already: false };
+    } catch (err) {
+      return { ok: false, error: String(err && err.message ? err.message : err) };
+    }
+  };
+
+  const result = await evalInInspectedWindow(`(${installer.toString()})()`);
+  if (!result?.ok) {
+    throw new Error(result?.error || 'Failed to install WebSocket interceptor');
+  }
+  wsInterceptorInstalled = true;
+  await applyWebSocketInterceptConfig();
+  renderWebSocketMeta();
+}
+
+async function applyWebSocketInterceptConfig() {
+  const cfg = {
+    blockOutgoing: wsInterceptConfig.blockOutgoing === true,
+    replaceFrom: String(wsInterceptConfig.replaceFrom || ''),
+    replaceTo: String(wsInterceptConfig.replaceTo || ''),
+  };
+  await evalInInspectedWindow(`window.__hacktoolsWsSetConfig ? window.__hacktoolsWsSetConfig(${JSON.stringify(cfg)}) : null`);
+  saveScopeBlockLists();
+}
+
+function websocketReadyStateLabel(state) {
+  if (state === 0) return 'CONNECTING';
+  if (state === 1) return 'OPEN';
+  if (state === 2) return 'CLOSING';
+  return 'CLOSED';
+}
+
+function wsPayloadLength(payload) {
+  const text = String(payload || '');
+  try {
+    return new TextEncoder().encode(text).length;
+  } catch (_) {
+    return text.length;
+  }
+}
+
+function wsFormatDelta(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function pushWsFrame(frame) {
+  const f = {
+    uid: `wsf_${Date.now()}_${++wsFrameCounter}`,
+    ts: Number(frame?.ts || Date.now()),
+    direction: String(frame?.direction || 'meta'),
+    id: String(frame?.id || ''),
+    url: String(frame?.url || ''),
+    payload: String(frame?.payload || ''),
+  };
+  f.length = wsPayloadLength(f.payload);
+  wsFrames.unshift(f);
+  if (wsFrames.length > 600) wsFrames = wsFrames.slice(0, 600);
+
+  // Mirror actionable websocket frames into Captured Requests so users can click
+  // and jump into full WebSocket workflow from the main request list.
+  if (['in', 'out', 'blocked'].includes(f.direction) && !wsCapturedFrameUids.has(f.uid)) {
+    wsCapturedFrameUids.add(f.uid);
+    addCapturedRequest({
+      id: Date.now() + Math.random(),
+      kind: 'ws-frame',
+      method: 'WS',
+      url: f.url || '',
+      status: f.direction,
+      statusText: '',
+      time: new Date(f.ts).toLocaleTimeString(),
+      request: {
+        method: 'WS',
+        url: f.url || '',
+        headers: [],
+        postData: null,
+      },
+      response: {
+        status: 0,
+        headers: [],
+        content: null,
+      },
+      ws: {
+        frameUid: f.uid,
+        connectionId: f.id || '',
+        direction: f.direction,
+        payload: f.payload || '',
+        length: f.length || 0,
+      },
+    }, { autoScan: false });
+  }
+}
+
+function wsFramePreview(payload) {
+  const p = String(payload || '');
+  if (p.length <= 220) return p;
+  return `${p.slice(0, 220)}...`;
+}
+
+function copyWebSocketPayloadByUid(uid) {
+  const frame = wsFrames.find((f) => f.uid === uid);
+  const payload = String(frame?.payload || '');
+  if (!payload) {
+    showToast('Payload is empty.');
+    return;
+  }
+  copyToClipboard(payload)
+    .then(() => showToast('WebSocket payload copied.'))
+    .catch(() => showCopyModal(payload));
+}
+
+function wsPayloadHex(payload) {
+  const text = String(payload || '');
+  const bytes = new TextEncoder().encode(text);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 16) {
+    const chunk = bytes.slice(i, i + 16);
+    const hex = [...chunk].map((b) => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = [...chunk].map((b) => (b >= 32 && b <= 126 ? String.fromCharCode(b) : '.')).join('');
+    out += `${i.toString(16).padStart(4, '0')}  ${hex.padEnd(16 * 3)}  ${ascii}\n`;
+  }
+  return out.trim();
+}
+
+function renderWebSocketDetail(frame) {
+  const panel = document.getElementById('wsDetailPanel');
+  const prettyEl = document.getElementById('wsDetailPretty');
+  const rawEl = document.getElementById('wsDetailRaw');
+  const hexEl = document.getElementById('wsDetailHex');
+  if (!panel || !prettyEl || !rawEl || !hexEl) return;
+  if (!frame) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  const payload = String(frame.payload || '');
+  let pretty = payload;
+  try {
+    pretty = JSON.stringify(JSON.parse(payload), null, 2);
+  } catch (_) {}
+
+  prettyEl.textContent = pretty;
+  rawEl.textContent = payload;
+  hexEl.textContent = wsPayloadHex(payload);
+  panel.classList.remove('hidden');
+}
+
+function renderWebSocketMeta() {
+  const el = document.getElementById('wsMeta');
+  if (!el) return;
+  const openCount = wsConnections.filter((c) => c.readyState === 1).length;
+  const last = wsFrames[0]?.ts ? new Date(wsFrames[0].ts).toLocaleTimeString() : '—';
+  el.innerHTML = `
+    <span class="metric">Interceptor: ${wsInterceptorInstalled ? 'enabled' : 'disabled'}</span>
+    <span class="metric">Connections: ${wsConnections.length}</span>
+    <span class="metric">Open: ${openCount}</span>
+    <span class="metric">Frames: ${wsFrames.length}</span>
+    <span class="metric">Last event: ${escapeHtml(last)}</span>
+  `;
+}
+
+function renderWebSocketConnectionOptions() {
+  const select = document.getElementById('wsConnectionSelect');
+  if (!select) return;
+  const previous = wsSelectedConnectionId || select.value;
+  const openSockets = wsConnections.filter((c) => c.readyState === 1);
+  const options = openSockets
+    .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(`${websocketReadyStateLabel(c.readyState)} · ${c.url}`)}</option>`)
+    .join('');
+  select.innerHTML = `<option value="">${openSockets.length ? 'Select open socket...' : 'No open socket'}</option>${options}`;
+  if (previous && openSockets.some((c) => c.id === previous)) {
+    select.value = previous;
+  } else {
+    const firstOpen = openSockets[0];
+    select.value = firstOpen?.id || '';
+  }
+  wsSelectedConnectionId = select.value || '';
+}
+
+function renderWebSocketResults() {
+  const el = document.getElementById('wsResults');
+  if (!el) return;
+  const q = String(document.getElementById('wsSearchInput')?.value || '').toLowerCase().trim();
+  const direction = String(document.getElementById('wsDirectionFilter')?.value || '').trim();
+  const filtered = wsFrames
+    .filter((f) => (!direction || f.direction === direction))
+    .filter((f) => (!q || `${f.id} ${f.url} ${f.payload}`.toLowerCase().includes(q)));
+
+  if (filtered.length === 0) {
+    el.innerHTML = '<p class="scanner-ok">No WebSocket frames yet. Open WebSocket tab first, enable interceptor, then reload page and interact.</p>';
+    renderWebSocketDetail(null);
+    return;
+  }
+
+  const byConn = new Map();
+  filtered.slice(0, 280).forEach((f) => {
+    const key = f.id || 'system';
+    if (!byConn.has(key)) byConn.set(key, []);
+    byConn.get(key).push(f);
+  });
+
+  let rows = '';
+  byConn.forEach((frames, connId) => {
+    const first = frames[0];
+    rows += `
+      <tr class="ws-group-row">
+        <td colspan="7"><strong>${escapeHtml(connId)}</strong> · ${escapeHtml(first?.url || '')} · ${frames.length} frame(s)</td>
+      </tr>
+    `;
+    let previousTs = null;
+    frames.forEach((f) => {
+      const delta = previousTs == null ? null : Math.max(0, previousTs - f.ts);
+      previousTs = f.ts;
+      rows += `
+        <tr class="ws-frame-row ${wsSelectedFrameUid === f.uid ? 'selected' : ''}" data-ws-uid="${escapeHtml(f.uid)}">
+          <td>${escapeHtml(new Date(f.ts || Date.now()).toLocaleTimeString())}</td>
+          <td>${escapeHtml(wsFormatDelta(delta))}</td>
+          <td><span class="ws-log-direction ${escapeHtml(String(f.direction || 'meta'))}">${escapeHtml(String(f.direction || 'meta'))}</span></td>
+          <td>${escapeHtml(f.id || 'system')}</td>
+          <td class="tech-evidence" title="${escapeHtml(f.url || '')}">${escapeHtml(f.url || '')}</td>
+          <td>${escapeHtml(String(f.length || 0))}</td>
+          <td class="tech-evidence" title="${escapeHtml(String(f.payload || ''))}">
+            ${escapeHtml(wsFramePreview(f.payload))}
+            <button type="button" class="btn btn-secondary btn-small ws-copy-payload-btn" data-ws-copy-payload="${escapeHtml(f.uid)}">Copy</button>
+          </td>
+        </tr>
+      `;
+    });
+  });
+
+  el.innerHTML = `
+    <div class="tech-table-wrap">
+      <table class="tech-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Delta</th>
+            <th>Direction</th>
+            <th>Connection</th>
+            <th>URL</th>
+            <th>Length</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+  if (!filtered.some((f) => f.uid === wsSelectedFrameUid)) {
+    wsSelectedFrameUid = filtered[0]?.uid || '';
+  }
+  renderWebSocketDetail(filtered.find((f) => f.uid === wsSelectedFrameUid) || null);
+}
+
+async function refreshWebSocketState() {
+  const payload = await evalInInspectedWindow('window.__hacktoolsWsPull ? window.__hacktoolsWsPull(200) : null');
+  if (!payload || payload.ok !== true) return;
+  wsInterceptorInstalled = payload.installed === true;
+  const enableBtn = document.getElementById('wsEnableBtn');
+  if (enableBtn && wsInterceptorInstalled) enableBtn.textContent = 'Interceptor Enabled';
+  wsConnections = Array.isArray(payload.sockets) ? payload.sockets : [];
+  const logs = Array.isArray(payload.logs) ? payload.logs : [];
+  if (logs.length) {
+    logs.forEach((f) => {
+      pushWsFrame({
+        ts: Number(f?.ts || Date.now()),
+        direction: String(f?.direction || 'meta'),
+        id: String(f?.id || ''),
+        url: String(f?.url || ''),
+        payload: String(f?.payload || ''),
+      });
+    });
+    wsFrames.sort((a, b) => b.ts - a.ts);
+  }
+  renderWebSocketConnectionOptions();
+  renderWebSocketMeta();
+  renderWebSocketResults();
+}
+
+function startWebSocketPolling() {
+  stopWebSocketPolling();
+  wsPollTimer = setInterval(() => {
+    const panel = document.getElementById('websocketPanel');
+    if (panel?.classList.contains('hidden')) return;
+    refreshWebSocketState().catch(() => {});
+  }, 1200);
+}
+
+function stopWebSocketPolling() {
+  if (wsPollTimer) clearInterval(wsPollTimer);
+  wsPollTimer = null;
+}
+
+async function sendWebSocketMessage() {
+  const input = document.getElementById('wsSendInput');
+  const message = String(input?.value || '');
+  if (!message) {
+    showToast('Enter a WebSocket message to send.');
+    return;
+  }
+  let id = wsSelectedConnectionId || document.getElementById('wsConnectionSelect')?.value || '';
+  if (!id || !wsConnections.some((c) => c.id === id && c.readyState === 1)) {
+    const firstOpen = wsConnections.find((c) => c.readyState === 1);
+    id = firstOpen?.id || '';
+  }
+  if (!id) {
+    showToast('No open WebSocket connection. Refresh page and reconnect.');
+    return;
+  }
+  wsSelectedConnectionId = id;
+  const wsSelect = document.getElementById('wsConnectionSelect');
+  if (wsSelect) wsSelect.value = id;
+  const result = await evalInInspectedWindow(`window.__hacktoolsWsSend ? window.__hacktoolsWsSend(${JSON.stringify(id)}, ${JSON.stringify(message)}) : { ok:false, error:'Interceptor not installed' }`);
+  if (!result?.ok) {
+    showToast(result?.error || 'WebSocket send failed (socket may have closed)');
+    return;
+  }
+  showToast('WebSocket message sent.');
+  await refreshWebSocketState();
+}
+
+async function clearWebSocketLogs() {
+  wsFrames = [];
+  wsSelectedFrameUid = '';
+  wsCapturedFrameUids = new Set();
+  renderWebSocketResults();
+  await evalInInspectedWindow('window.__hacktoolsWsLogs ? (window.__hacktoolsWsLogs = [], true) : false').catch(() => {});
+  renderWebSocketMeta();
+}
+
+function setupWebSocketTools() {
+  const enableBtn = document.getElementById('wsEnableBtn');
+  const refreshBtn = document.getElementById('wsRefreshBtn');
+  const clearBtn = document.getElementById('wsClearBtn');
+  const applyBtn = document.getElementById('wsApplyRuleBtn');
+  const sendBtnEl = document.getElementById('wsSendBtn');
+  const select = document.getElementById('wsConnectionSelect');
+  const blockToggle = document.getElementById('wsBlockOutgoingToggle');
+  const replaceFromInput = document.getElementById('wsReplaceFromInput');
+  const replaceToInput = document.getElementById('wsReplaceToInput');
+  const wsSearchInput = document.getElementById('wsSearchInput');
+  const wsDirectionFilter = document.getElementById('wsDirectionFilter');
+  const wsResultsEl = document.getElementById('wsResults');
+
+  if (blockToggle) blockToggle.checked = wsInterceptConfig.blockOutgoing === true;
+  if (replaceFromInput) replaceFromInput.value = wsInterceptConfig.replaceFrom || '';
+  if (replaceToInput) replaceToInput.value = wsInterceptConfig.replaceTo || '';
+  pruneWsFrameCapturedRequests();
+
+  enableBtn?.addEventListener('click', async () => {
+    try {
+      await installWebSocketInterceptor();
+      enableBtn.textContent = 'Interceptor Enabled';
+      showToast('WebSocket interceptor enabled.');
+      await refreshWebSocketState();
+      startWebSocketPolling();
+    } catch (err) {
+      showToast(err?.message || 'Unable to enable interceptor');
+    }
+  });
+  refreshBtn?.addEventListener('click', () => refreshWebSocketState().catch((err) => showToast(err?.message || 'Refresh failed')));
+  clearBtn?.addEventListener('click', () => clearWebSocketLogs().catch(() => {}));
+  select?.addEventListener('change', (e) => {
+    wsSelectedConnectionId = e.target.value || '';
+  });
+  applyBtn?.addEventListener('click', async () => {
+    wsInterceptConfig.blockOutgoing = !!blockToggle?.checked;
+    wsInterceptConfig.replaceFrom = String(replaceFromInput?.value || '');
+    wsInterceptConfig.replaceTo = String(replaceToInput?.value || '');
+    try {
+      await applyWebSocketInterceptConfig();
+      showToast('WebSocket rule applied.');
+      await refreshWebSocketState();
+    } catch (err) {
+      showToast(err?.message || 'Failed to apply WebSocket rule');
+    }
+  });
+  sendBtnEl?.addEventListener('click', () => sendWebSocketMessage().catch((err) => showToast(err?.message || 'Send failed')));
+  wsSearchInput?.addEventListener('input', renderWebSocketResults);
+  wsDirectionFilter?.addEventListener('change', renderWebSocketResults);
+  wsResultsEl?.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const copyBtn = target.closest('[data-ws-copy-payload]');
+    if (copyBtn) {
+      e.stopPropagation();
+      copyWebSocketPayloadByUid(String(copyBtn.getAttribute('data-ws-copy-payload') || ''));
+      return;
+    }
+    const row = target.closest('[data-ws-uid]');
+    if (!row) return;
+    wsSelectedFrameUid = String(row.getAttribute('data-ws-uid') || '');
+    renderWebSocketResults();
+  });
+  document.querySelectorAll('.ws-detail-tabs [data-ws-detail-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.ws-detail-tabs [data-ws-detail-tab]').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const tab = btn.getAttribute('data-ws-detail-tab');
+      document.getElementById('wsDetailPretty')?.classList.toggle('hidden', tab !== 'pretty');
+      document.getElementById('wsDetailRaw')?.classList.toggle('hidden', tab !== 'raw');
+      document.getElementById('wsDetailHex')?.classList.toggle('hidden', tab !== 'hex');
+    });
+  });
+
+  renderWebSocketMeta();
+  renderWebSocketResults();
+
+  // Best effort: arm interceptor early so first page interaction gets captured.
+  setTimeout(() => {
+    installWebSocketInterceptor()
+      .then(() => refreshWebSocketState().catch(() => {}))
+      .catch(() => {});
+  }, 300);
 }
 
 /**
@@ -2039,7 +2705,6 @@ async function enrichTechWithCves() {
   techLastRunMeta.cveRateLimited = sawRateLimit;
   renderTechMeta();
   renderTechResults();
-  renderOwaspFindings();
   const withCves = techFindingsCache.filter((t) => (t.cves || []).length > 0).length;
   if (sawRateLimit) {
     showToast(withCves > 0 ? `Rate-limited on live CVE API. Used fallback; matches: ${withCves}.` : 'Rate-limited and no CVE matches.');
@@ -2231,7 +2896,6 @@ async function runTechDetection() {
     techLastRunMeta.lastRunAt = Date.now();
     renderTechMeta();
     renderTechResults();
-    renderOwaspFindings();
   } catch (err) {
     resultsEl.innerHTML = `<p class="scanner-error">${escapeHtml(err.message || 'Detection failed')}</p>`;
   }
@@ -2389,6 +3053,876 @@ function exportTechReport(format) {
   const csv = rows.map((r) => r.map((v) => `"${String(v || '').replace(/"/g, '""')}"`).join(',')).join('\n');
   downloadText(`tech-detector-${ts}.csv`, csv, 'text/csv');
   showToast('Tech CSV exported.');
+}
+
+function setupWordpressAudit() {
+  document.getElementById('runWordpressAuditBtn')?.addEventListener('click', runWordpressAudit);
+  document.getElementById('runWordpressEndpointScanBtn')?.addEventListener('click', runWordpressEndpointScan);
+  document.getElementById('stopWordpressEndpointScanBtn')?.addEventListener('click', () => {
+    if (!wordpressEndpointScanRunning) return;
+    wordpressEndpointScanCancelRequested = true;
+    showToast('Stopping endpoint scan...');
+  });
+  const importBtn = document.getElementById('importWordpressWordlistBtn');
+  const fileInput = document.getElementById('wordpressWordlistFileInput');
+  importBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => importWordpressWordlistFromFile(fileInput));
+  document.getElementById('wordpressEndpointStatusFilter')?.addEventListener('change', () => renderWordpressEndpointResults());
+  document.getElementById('wordpressEndpointSearchInput')?.addEventListener('input', () => renderWordpressEndpointResults());
+  document.getElementById('exportWordpressJsonBtn')?.addEventListener('click', () => exportWordpressAudit('json'));
+  document.getElementById('exportWordpressCsvBtn')?.addEventListener('click', () => exportWordpressAudit('csv'));
+  const baseInput = document.getElementById('wordpressBaseUrlInput');
+  if (baseInput) {
+    baseInput.value = getWordpressLikelyBaseUrl();
+  }
+  renderWordpressMeta();
+  renderWordpressEndpointResults();
+}
+
+async function importWordpressWordlistFromFile(fileInput) {
+  const file = fileInput?.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const paths = normalizeWordpressWordlistInput(text);
+    if (paths.length === 0) {
+      showToast('Imported file has no valid paths.');
+      return;
+    }
+    const textarea = document.getElementById('wordpressWordlistInput');
+    if (textarea) textarea.value = paths.join('\n');
+    showToast(`Imported ${paths.length} wordlist paths.`);
+  } catch (_) {
+    showToast('Failed to import wordlist file.');
+  } finally {
+    // Allow re-importing the same file again.
+    if (fileInput) fileInput.value = '';
+  }
+}
+
+function wordpressConfidenceRank(v) {
+  if (v === 'high') return 3;
+  if (v === 'medium') return 2;
+  return 1;
+}
+
+function collectWordpressEntity(map, key, item) {
+  const existing = map.get(key);
+  if (!existing) {
+    map.set(key, {
+      ...item,
+      versions: [...new Set((item.versions || []).filter(Boolean))],
+      paths: [...new Set((item.paths || []).filter(Boolean))],
+      evidence: [...new Set((item.evidence || []).filter(Boolean))],
+    });
+    return;
+  }
+  existing.versions = [...new Set([...(existing.versions || []), ...((item.versions || []).filter(Boolean))])];
+  existing.paths = [...new Set([...(existing.paths || []), ...((item.paths || []).filter(Boolean))])];
+  existing.evidence = [...new Set([...(existing.evidence || []), ...((item.evidence || []).filter(Boolean))])];
+  if (wordpressConfidenceRank(item.confidence) > wordpressConfidenceRank(existing.confidence)) {
+    existing.confidence = item.confidence;
+  }
+  if (item.severity === 'high' || (item.severity === 'medium' && existing.severity === 'low')) {
+    existing.severity = item.severity;
+  }
+  map.set(key, existing);
+}
+
+function getWordpressPluginCves(slug, versions) {
+  const unique = [...new Set((versions || []).filter(Boolean))];
+  if (!slug || unique.length === 0) return [];
+  const rules = [
+    {
+      slug: 'contact-form-7',
+      when: (v) => isVersionLessThan(v, '5.3.2'),
+      cves: [{ id: 'CVE-2020-35489', summary: 'Contact Form 7 unrestricted file upload in older versions.' }],
+    },
+    {
+      slug: 'wp-file-manager',
+      when: (v) => isVersionLessThan(v, '6.9'),
+      cves: [{ id: 'CVE-2020-25213', summary: 'WP File Manager arbitrary file upload vulnerability.' }],
+    },
+    {
+      slug: 'duplicator',
+      when: (v) => isVersionLessThan(v, '1.3.28'),
+      cves: [{ id: 'CVE-2020-11738', summary: 'Duplicator plugin vulnerability in older branch.' }],
+    },
+  ];
+  const rule = rules.find((r) => r.slug === String(slug || '').toLowerCase());
+  if (!rule) return [];
+  const hits = [];
+  unique.forEach((v) => {
+    if (rule.when(v)) {
+      rule.cves.forEach((c) => hits.push({
+        ...c,
+        affectedVersion: v,
+        source: 'local-rules',
+        url: `https://nvd.nist.gov/vuln/detail/${c.id}`,
+      }));
+    }
+  });
+  return hits;
+}
+
+async function collectRuntimeWordpressSignals(tabId) {
+  const res = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const scripts = [...document.querySelectorAll('script[src]')].map((s) => s.src).filter(Boolean).slice(0, 250);
+      const links = [...document.querySelectorAll('link[href]')].map((l) => l.href).filter(Boolean).slice(0, 250);
+      const metaGenerator = document.querySelector('meta[name="generator"]')?.content || '';
+      const hasWpJson = !!document.querySelector('link[rel="https://api.w.org/"]');
+      return { scripts, links, metaGenerator, hasWpJson, pageUrl: location.href };
+    },
+  });
+  return res?.[0]?.result || { scripts: [], links: [], metaGenerator: '', hasWpJson: false, pageUrl: '' };
+}
+
+function wordpressExposureFromUrl(url) {
+  const u = String(url || '').toLowerCase();
+  const checks = [
+    { key: 'xmlrpc', re: /\/xmlrpc\.php(?:[?#]|$)/, severity: 'medium', title: 'XML-RPC endpoint exposed' },
+    { key: 'readme', re: /\/readme\.html(?:[?#]|$)/, severity: 'low', title: 'readme.html exposure' },
+    { key: 'wp-login', re: /\/wp-login\.php(?:[?#]|$)/, severity: 'low', title: 'wp-login endpoint observed' },
+    { key: 'wp-json-users', re: /\/wp-json\/wp\/v2\/users(?:[/?#]|$)/, severity: 'high', title: 'Potential WP user enumeration endpoint' },
+    { key: 'author-enum', re: /[?&]author=\d+\b/, severity: 'medium', title: 'Potential author enumeration pattern' },
+  ];
+  return checks.find((c) => c.re.test(u)) || null;
+}
+
+function getWordpressLikelyBaseUrl() {
+  const selected = String(selectedRequest?.url || selectedRequest?.request?.url || '');
+  const firstHttp = String(capturedRequests.find((r) => /^https?:/i.test(String(r?.url || r?.request?.url || '')))?.url || '');
+  const candidate = selected || firstHttp;
+  if (!candidate) return '';
+  try {
+    const u = new URL(candidate);
+    // Preserve sub-path deployments (e.g. /switch/) instead of forcing host root.
+    const path = u.pathname.endsWith('/') ? u.pathname : `${u.pathname}/`;
+    return `${u.protocol}//${u.host}${path}`;
+  } catch (_) {
+    return '';
+  }
+}
+
+function getWordpressSafeWordlist() {
+  return [
+    'wp-login.php',
+    'xmlrpc.php',
+    'readme.html',
+    'license.txt',
+    'wp-json/',
+    'wp-json/wp/v2/users',
+    'wp-json/wp/v2/posts',
+    'wp-admin/',
+    'wp-admin/admin-ajax.php',
+    'wp-cron.php',
+    'wp-content/debug.log',
+    'wp-config.php',
+    'wp-config-sample.php',
+    'installer.php',
+    'installer-backup.php',
+    'dup-installer-bootlog',
+    'wordfence-waf.php',
+  ];
+}
+
+function getWordpressAggressiveWordlist() {
+  return [
+    ...getWordpressSafeWordlist(),
+    'wp-activate.php',
+    'wp-signup.php',
+    'wp-trackback.php',
+    'wp-links-opml.php',
+    'wp-load.php',
+    'wp-mail.php',
+    'wp-register.php',
+    'wp-admin/install.php',
+    'wp-admin/setup-config.php',
+    'wp-admin/plugin-install.php',
+    'wp-admin/theme-install.php',
+    'wp-admin/network/',
+    'wp-content/plugins/',
+    'wp-content/themes/',
+    'wp-includes/version.php',
+    'wp-includes/wlwmanifest.xml',
+    'wp-content/uploads/',
+  ];
+}
+
+function normalizeWordpressWordlistInput(raw) {
+  return String(raw || '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((p) => p.replace(/^\//, ''));
+}
+
+function isLikelyStaticWordpressPath(path) {
+  return /\.(?:css|js|png|jpe?g|gif|svg|woff2?|ttf|eot|ico|map)$/i.test(String(path || ''));
+}
+
+function classifyWordpressEndpointRisk(path, status, contentType) {
+  const p = String(path || '').toLowerCase();
+  if (status === 200 && /wp-config\.php|debug\.log|installer\.php|installer-backup\.php|dup-installer-bootlog/.test(p)) {
+    return { severity: 'high', note: 'Sensitive file appears accessible' };
+  }
+  if (status === 200 && /wp-json\/wp\/v2\/users|[?&]author=\d+/.test(p)) {
+    return { severity: 'high', note: 'Potential user enumeration exposure' };
+  }
+  if ((status === 200 || status === 405) && /xmlrpc\.php/.test(p)) {
+    return { severity: 'medium', note: 'XML-RPC reachable' };
+  }
+  if (status === 200 && /wp-admin\/?$/.test(p)) {
+    return { severity: 'medium', note: 'Admin panel endpoint exposed' };
+  }
+  if (status === 200 && /readme\.html|license\.txt/.test(p)) {
+    return { severity: 'low', note: 'Version/info disclosure surface' };
+  }
+  if (status === 403 || status === 401) {
+    return { severity: 'low', note: 'Endpoint exists but is access-controlled' };
+  }
+  if (/application\/json/.test(String(contentType || '').toLowerCase()) && status === 200) {
+    return { severity: 'medium', note: 'JSON API endpoint accessible' };
+  }
+  return { severity: 'low', note: 'Endpoint observed' };
+}
+
+function buildWordpressWordlist(mode, customInput, includeStatic) {
+  const custom = normalizeWordpressWordlistInput(customInput);
+  if (custom.length > 0) {
+    const items = [...new Set(custom)];
+    return includeStatic ? items : items.filter((p) => !isLikelyStaticWordpressPath(p));
+  }
+  const base = mode === 'aggressive' ? getWordpressAggressiveWordlist() : getWordpressSafeWordlist();
+  return includeStatic ? [...new Set(base)] : [...new Set(base)].filter((p) => !isLikelyStaticWordpressPath(p));
+}
+
+async function runWordpressAudit() {
+  const el = document.getElementById('wordpressResults');
+  if (!el) return;
+  el.innerHTML = '<p class="scanner-loading">Running WordPress passive audit...</p>';
+
+  const map = new Map();
+  const recent = capturedRequests
+    .filter((r) => String(r?.url || '').startsWith('http'))
+    .slice(0, 600);
+  let sawWpSignal = false;
+
+  try {
+    recent.forEach((r) => {
+      const url = String(r?.url || r?.request?.url || '');
+      const headers = getResponseHeadersObject(r);
+      const urlLc = url.toLowerCase();
+      const full = getFullUrlFromValue(url);
+
+      const wpVersionCandidates = [];
+      const qVer = url.match(/[?&]ver=(\d+(?:\.\d+){1,3})\b/i)?.[1] || '';
+      if (qVer) wpVersionCandidates.push(qVer);
+      const genHeader = headers['x-generator'] || headers['generator'] || '';
+      const headerVersion = extractVersionFromText(genHeader, [/wordpress\/?(\d+(?:\.\d+){1,3})/i, /wordpress\s*(\d+(?:\.\d+){1,3})/i]);
+      if (headerVersion) wpVersionCandidates.push(headerVersion);
+
+      if (/\/wp-content\/|\/wp-includes\/|\/wp-json\/|\/xmlrpc\.php|\/wp-login\.php/i.test(urlLc) || /wordpress/i.test(genHeader)) {
+        sawWpSignal = true;
+        collectWordpressEntity(map, 'core:wordpress', {
+          type: 'core',
+          name: 'WordPress',
+          versions: wpVersionCandidates,
+          confidence: /\/wp-content\/|\/wp-includes\//i.test(urlLc) ? 'high' : 'medium',
+          severity: 'medium',
+          paths: [full],
+          evidence: [`url:${url}`],
+        });
+      }
+
+      const pluginMatch = urlLc.match(/\/wp-content\/plugins\/([^/?#]+)/i);
+      if (pluginMatch) {
+        sawWpSignal = true;
+        collectWordpressEntity(map, `plugin:${pluginMatch[1]}`, {
+          type: 'plugin',
+          name: pluginMatch[1],
+          versions: qVer ? [qVer] : [],
+          confidence: 'high',
+          severity: 'medium',
+          paths: [full],
+          evidence: [`plugin-path:${url}`],
+        });
+      }
+
+      const themeMatch = urlLc.match(/\/wp-content\/themes\/([^/?#]+)/i);
+      if (themeMatch) {
+        sawWpSignal = true;
+        collectWordpressEntity(map, `theme:${themeMatch[1]}`, {
+          type: 'theme',
+          name: themeMatch[1],
+          versions: qVer ? [qVer] : [],
+          confidence: 'high',
+          severity: 'low',
+          paths: [full],
+          evidence: [`theme-path:${url}`],
+        });
+      }
+
+      const exposure = wordpressExposureFromUrl(url);
+      if (exposure) {
+        sawWpSignal = true;
+        collectWordpressEntity(map, `exposure:${exposure.key}`, {
+          type: 'exposure',
+          name: exposure.title,
+          versions: [],
+          confidence: 'high',
+          severity: exposure.severity,
+          paths: [full],
+          evidence: [`exposure:${url}`],
+        });
+      }
+    });
+
+    const tabId = chrome.devtools.inspectedWindow.tabId;
+    const runtime = await collectRuntimeWordpressSignals(tabId);
+    const runtimeAssets = [...(runtime.scripts || []), ...(runtime.links || [])];
+    runtimeAssets.forEach((src) => {
+      const srcLc = String(src || '').toLowerCase();
+      if (/\/wp-content\/|\/wp-includes\/|\/wp-json\//i.test(srcLc)) {
+        sawWpSignal = true;
+        const v = src.match(/[?&]ver=(\d+(?:\.\d+){1,3})\b/i)?.[1] || '';
+        collectWordpressEntity(map, 'core:wordpress', {
+          type: 'core',
+          name: 'WordPress',
+          versions: v ? [v] : [],
+          confidence: 'high',
+          severity: 'medium',
+          paths: [getFullUrlFromValue(src)],
+          evidence: [`runtime-asset:${src}`],
+        });
+      }
+      const p = srcLc.match(/\/wp-content\/plugins\/([^/?#]+)/i);
+      if (p) {
+        sawWpSignal = true;
+        const v = src.match(/[?&]ver=(\d+(?:\.\d+){1,3})\b/i)?.[1] || '';
+        collectWordpressEntity(map, `plugin:${p[1]}`, {
+          type: 'plugin',
+          name: p[1],
+          versions: v ? [v] : [],
+          confidence: 'high',
+          severity: 'medium',
+          paths: [getFullUrlFromValue(src)],
+          evidence: [`runtime-plugin:${src}`],
+        });
+      }
+      const t = srcLc.match(/\/wp-content\/themes\/([^/?#]+)/i);
+      if (t) {
+        sawWpSignal = true;
+        const v = src.match(/[?&]ver=(\d+(?:\.\d+){1,3})\b/i)?.[1] || '';
+        collectWordpressEntity(map, `theme:${t[1]}`, {
+          type: 'theme',
+          name: t[1],
+          versions: v ? [v] : [],
+          confidence: 'high',
+          severity: 'low',
+          paths: [getFullUrlFromValue(src)],
+          evidence: [`runtime-theme:${src}`],
+        });
+      }
+    });
+
+    if (/wordpress/i.test(runtime.metaGenerator || '')) {
+      sawWpSignal = true;
+      const v = extractVersionFromText(runtime.metaGenerator, [/wordpress\s*([0-9.]+)/i]);
+      collectWordpressEntity(map, 'core:wordpress', {
+        type: 'core',
+        name: 'WordPress',
+        versions: v ? [v] : [],
+        confidence: 'high',
+        severity: 'medium',
+        paths: runtime.pageUrl ? [getFullUrlFromValue(runtime.pageUrl)] : [],
+        evidence: [`meta-generator:${runtime.metaGenerator}`],
+      });
+    }
+    if (runtime.hasWpJson) {
+      sawWpSignal = true;
+      collectWordpressEntity(map, 'exposure:wp-json', {
+        type: 'exposure',
+        name: 'WP REST API discovery link exposed',
+        versions: [],
+        confidence: 'high',
+        severity: 'low',
+        paths: runtime.pageUrl ? [getFullUrlFromValue(runtime.pageUrl)] : [],
+        evidence: ['link[rel="https://api.w.org/"] present'],
+      });
+    }
+
+    if (!sawWpSignal) {
+      wordpressAuditFindingsCache = [];
+      wordpressAuditMeta = {
+        total: 0, core: 0, plugins: 0, themes: 0, exposures: 0, endpointHits: wordpressEndpointFindingsCache.length, cveHits: 0, high: 0, medium: 0, low: 0, lastRunAt: Date.now(),
+      };
+      renderWordpressMeta();
+      renderWordpressResults();
+      return;
+    }
+
+    wordpressAuditFindingsCache = [...map.values()]
+      .map((item) => {
+        const versions = [...new Set((item.versions || []).filter(Boolean))];
+        const coreCves = item.type === 'core' ? getKnownCvesForTechVersion('WordPress', versions) : [];
+        const pluginCves = item.type === 'plugin' ? getWordpressPluginCves(item.name, versions) : [];
+        const cves = [...coreCves, ...pluginCves];
+        const versionRisk = item.type === 'core' ? getVersionRisk('WordPress', versions) : { severity: item.severity || 'low', note: 'No local core-version rule for this item type' };
+        return {
+          ...item,
+          versions,
+          paths: [...new Set((item.paths || []).filter(Boolean))].slice(0, 8),
+          evidence: [...new Set((item.evidence || []).filter(Boolean))].slice(0, 8),
+          cves,
+          cveStatus: cves.length ? `matched ${cves.length}` : 'none matched',
+          versionRisk,
+          testHints: item.type === 'plugin'
+            ? ['Check plugin changelog/security advisories', 'Test privileged actions for authZ', 'Validate upload/import endpoints']
+            : item.type === 'exposure'
+              ? ['Validate endpoint access controls', 'Rate-limit and abuse testing', 'Verify data disclosure boundaries']
+              : ['Check wp-json data leakage', 'User enumeration resistance', 'Review hardening plugins and update policy'],
+        };
+      })
+      .sort((a, b) => {
+        const severityRank = { high: 3, medium: 2, low: 1 };
+        return (severityRank[b.severity] || 0) - (severityRank[a.severity] || 0) || a.type.localeCompare(b.type) || a.name.localeCompare(b.name);
+      });
+
+    const cveHits = wordpressAuditFindingsCache.reduce((n, f) => n + ((f.cves || []).length > 0 ? 1 : 0), 0);
+    wordpressAuditMeta = {
+      total: wordpressAuditFindingsCache.length,
+      core: wordpressAuditFindingsCache.filter((f) => f.type === 'core').length,
+      plugins: wordpressAuditFindingsCache.filter((f) => f.type === 'plugin').length,
+      themes: wordpressAuditFindingsCache.filter((f) => f.type === 'theme').length,
+      exposures: wordpressAuditFindingsCache.filter((f) => f.type === 'exposure').length,
+      endpointHits: wordpressEndpointFindingsCache.length,
+      cveHits,
+      high: wordpressAuditFindingsCache.filter((f) => f.severity === 'high').length,
+      medium: wordpressAuditFindingsCache.filter((f) => f.severity === 'medium').length,
+      low: wordpressAuditFindingsCache.filter((f) => f.severity === 'low').length,
+      lastRunAt: Date.now(),
+    };
+    renderWordpressMeta();
+    renderWordpressResults();
+  } catch (err) {
+    el.innerHTML = `<p class="scanner-error">${escapeHtml(err.message || 'WordPress audit failed')}</p>`;
+  }
+}
+
+async function runWordpressEndpointScan() {
+  if (wordpressEndpointScanRunning) {
+    showToast('Endpoint scan already running.');
+    return;
+  }
+  const resultsEl = document.getElementById('wordpressEndpointResults');
+  if (!resultsEl) return;
+  const runBtn = document.getElementById('runWordpressEndpointScanBtn');
+  const stopBtn = document.getElementById('stopWordpressEndpointScanBtn');
+  const baseInput = document.getElementById('wordpressBaseUrlInput');
+  const modeSelect = document.getElementById('wordpressEnumModeSelect');
+  const staticToggle = document.getElementById('wordpressIncludeStaticToggle');
+  const customWordlist = document.getElementById('wordpressWordlistInput');
+
+  let baseUrl = String(baseInput?.value || '').trim();
+  if (!baseUrl) baseUrl = getWordpressLikelyBaseUrl();
+  if (!baseUrl) {
+    showToast('Provide base URL or capture requests first.');
+    return;
+  }
+
+  try {
+    const parsed = new URL(baseUrl);
+    // Keep entered path prefix so scans target subdirectory WordPress installs.
+    const path = parsed.pathname.endsWith('/') ? parsed.pathname : `${parsed.pathname}/`;
+    baseUrl = `${parsed.protocol}//${parsed.host}${path}`;
+    if (baseInput) baseInput.value = baseUrl;
+  } catch (_) {
+    showToast('Invalid base URL.');
+    return;
+  }
+
+  const mode = String(modeSelect?.value || 'safe-active');
+  if (mode === 'passive') {
+    showToast('Passive mode selected. Use Run Audit for passive checks.');
+    return;
+  }
+
+  const includeStatic = !!staticToggle?.checked;
+  let wordlist = buildWordpressWordlist(mode, customWordlist?.value || '', includeStatic);
+  if (wordlist.length === 0) {
+    showToast('Wordlist is empty.');
+    return;
+  }
+  const hardCap = mode === 'aggressive' ? 1200 : 300;
+  if (wordlist.length > hardCap) {
+    wordlist = wordlist.slice(0, hardCap);
+    showToast(`Wordlist trimmed to ${hardCap} paths for safety.`);
+  }
+
+  wordpressEndpointFindingsCache = [];
+  wordpressEndpointScanRunning = true;
+  wordpressEndpointScanCancelRequested = false;
+  if (runBtn) runBtn.disabled = true;
+  if (stopBtn) stopBtn.classList.remove('hidden');
+  resultsEl.innerHTML = `<p class="scanner-loading">Enumerating ${wordlist.length} endpoints (${mode})...</p>`;
+  const concurrency = mode === 'aggressive' ? 4 : 2;
+  const delayMs = mode === 'aggressive' ? 120 : 180;
+  let cursor = 0;
+  let scanned = 0;
+  let stopEarly = false;
+  let transientErrors = 0;
+  let stopReason = '';
+  let lastRenderAt = 0;
+
+  function updateLiveEndpointView(force = false) {
+    const now = Date.now();
+    if (!force && now - lastRenderAt < 350) return;
+    lastRenderAt = now;
+    wordpressAuditMeta.endpointHits = wordpressEndpointFindingsCache.length;
+    wordpressAuditMeta.lastRunAt = Date.now();
+    renderWordpressMeta();
+    renderWordpressEndpointResults({
+      scanning: true,
+      scanned,
+      total: wordlist.length,
+      mode,
+    });
+  }
+
+  async function worker() {
+    while (!stopEarly) {
+      if (wordpressEndpointScanCancelRequested) {
+        stopEarly = true;
+        stopReason = 'Stopped by user.';
+        return;
+      }
+      const i = cursor;
+      cursor += 1;
+      if (i >= wordlist.length) return;
+      const rel = String(wordlist[i] || '').replace(/^\//, '');
+      let target = '';
+      try {
+        target = new URL(rel, baseUrl).toString();
+      } catch (_) {
+        continue;
+      }
+      try {
+        const res = await fetch(target, { method: 'GET', redirect: 'manual', credentials: 'include', cache: 'no-store' });
+        scanned += 1;
+        const status = Number(res.status || 0);
+        const contentType = String(res.headers.get('content-type') || '');
+        const contentLengthHeader = String(res.headers.get('content-length') || '');
+        const contentLength = Number.parseInt(contentLengthHeader, 10);
+        const risk = classifyWordpressEndpointRisk(rel, status, contentType);
+        wordpressEndpointFindingsCache.push({
+          type: 'endpoint',
+          name: rel,
+          url: target,
+          status,
+          severity: risk.severity,
+          note: risk.note,
+          contentType,
+          length: Number.isFinite(contentLength) ? contentLength : null,
+        });
+        updateLiveEndpointView(true);
+        if (status === 429 || status === 503) transientErrors += 1;
+        if (transientErrors >= 8) {
+          stopEarly = true;
+          stopReason = 'Server throttling detected (429/503).';
+        }
+      } catch (err) {
+        scanned += 1;
+        wordpressEndpointFindingsCache.push({
+          type: 'endpoint',
+          name: rel,
+          url: target,
+          status: 0,
+          severity: 'low',
+          note: 'Request failed',
+          contentType: '',
+          length: null,
+        });
+        updateLiveEndpointView(true);
+        const msg = String(err?.message || err || '');
+        if (/extension context invalidated/i.test(msg)) {
+          stopEarly = true;
+          stopReason = 'Extension context invalidated. Reload extension and DevTools.';
+        }
+        transientErrors += 1;
+        if (transientErrors >= 12) {
+          stopEarly = true;
+          if (!stopReason) stopReason = 'Too many request failures.';
+        }
+      }
+      if (wordpressEndpointScanCancelRequested) {
+        stopEarly = true;
+        stopReason = 'Stopped by user.';
+      }
+      if (scanned % 8 === 0) updateLiveEndpointView();
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  wordpressEndpointFindingsCache.sort((a, b) => {
+    const rank = { high: 3, medium: 2, low: 1 };
+    return (rank[b.severity] || 0) - (rank[a.severity] || 0) || (a.status || 0) - (b.status || 0) || a.name.localeCompare(b.name);
+  });
+  wordpressAuditMeta.endpointHits = wordpressEndpointFindingsCache.length;
+  wordpressAuditMeta.lastRunAt = Date.now();
+  renderWordpressMeta();
+  renderWordpressEndpointResults({
+    scanning: false,
+    scanned,
+    total: wordlist.length,
+    mode,
+    stopEarly,
+    stopReason,
+  });
+  if (stopEarly) {
+    showToast(`Endpoint scan stopped early. ${stopReason || 'Check logs.'} Hits: ${wordpressEndpointFindingsCache.length}`);
+  } else {
+    showToast(`Endpoint scan completed. Hits: ${wordpressEndpointFindingsCache.length}`);
+  }
+  wordpressEndpointScanRunning = false;
+  wordpressEndpointScanCancelRequested = false;
+  if (runBtn) runBtn.disabled = false;
+  if (stopBtn) stopBtn.classList.add('hidden');
+}
+
+function renderWordpressMeta() {
+  const el = document.getElementById('wordpressMeta');
+  if (!el) return;
+  const m = wordpressAuditMeta;
+  const last = m.lastRunAt ? new Date(m.lastRunAt).toLocaleTimeString() : '—';
+  el.innerHTML = `
+    <span class="metric">Findings: ${m.total}</span>
+    <span class="metric">Core: ${m.core}</span>
+    <span class="metric">Plugins: ${m.plugins}</span>
+    <span class="metric">Themes: ${m.themes}</span>
+    <span class="metric">Exposure: ${m.exposures}</span>
+    <span class="metric">Endpoint hits: ${m.endpointHits || 0}</span>
+    <span class="metric">CVE hits: ${m.cveHits}</span>
+    <span class="metric">High: ${m.high}</span>
+    <span class="metric">Medium: ${m.medium}</span>
+    <span class="metric">Low: ${m.low}</span>
+    <span class="metric">Last run: ${escapeHtml(last)}</span>
+  `;
+}
+
+function renderWordpressEndpointResults(progress = null) {
+  const el = document.getElementById('wordpressEndpointResults');
+  if (!el) return;
+  const statusFilter = String(document.getElementById('wordpressEndpointStatusFilter')?.value || '');
+  const q = String(document.getElementById('wordpressEndpointSearchInput')?.value || '').toLowerCase().trim();
+  const filtered = wordpressEndpointFindingsCache.filter((f) => {
+    const s = Number(f.status || 0);
+    const statusOk =
+      !statusFilter ||
+      (statusFilter === '2xx' && s >= 200 && s < 300) ||
+      (statusFilter === '3xx' && s >= 300 && s < 400) ||
+      (statusFilter === '4xx' && s >= 400 && s < 500) ||
+      (statusFilter === '5xx' && s >= 500 && s < 600) ||
+      (statusFilter === 'other' && !(s >= 200 && s < 600));
+    if (!statusOk) return false;
+    if (!q) return true;
+    return `${f.name} ${f.url} ${f.note} ${f.contentType} ${f.status}`.toLowerCase().includes(q);
+  });
+  const filterLabel = statusFilter || 'all';
+  const progressLine = progress
+    ? `<div class="supp-title">${progress.scanning ? 'Scanning' : 'Scan complete'} (${escapeHtml(progress.mode || 'n/a')}): ${escapeHtml(String(progress.scanned || 0))}/${escapeHtml(String(progress.total || 0))}${progress.stopEarly ? ` · stopped early (${escapeHtml(progress.stopReason || 'throttle detected')})` : ''} · filter=${escapeHtml(filterLabel)} · showing ${escapeHtml(String(filtered.length))}/${escapeHtml(String(wordpressEndpointFindingsCache.length))}</div>`
+    : '';
+  if (wordpressEndpointFindingsCache.length === 0) {
+    el.innerHTML = `${progressLine}<p class="scanner-ok">No active endpoint hits yet. Use Run Endpoint Scan to enumerate.</p>`;
+    return;
+  }
+  if (filtered.length === 0) {
+    el.innerHTML = `${progressLine}<p class="scanner-ok">No rows match current filter/search. Clear filters to view all scanned endpoints.</p>`;
+    return;
+  }
+  const rows = filtered.map((f, idx) => `
+    <tr>
+      <td>${escapeHtml(f.name)}</td>
+      <td>${escapeHtml(String(f.status || 0))}</td>
+      <td><span class="tag ${escapeHtml(f.severity || 'low')}">${escapeHtml(f.severity || 'low')}</span></td>
+      <td>${escapeHtml(f.contentType || '—')}</td>
+      <td>${escapeHtml(f.length == null ? '—' : String(f.length))}</td>
+      <td class="tech-evidence" title="${escapeHtml(f.note || '')}">${escapeHtml(f.note || '—')}</td>
+      <td class="tech-evidence" title="${escapeHtml(f.url || '')}">${escapeHtml(f.url || '—')}</td>
+      <td class="tech-actions">
+        <button type="button" class="btn btn-small copy-wp-endpoint-url-btn" data-url="${escapeHtml(f.url || '')}">Copy URL</button>
+      </td>
+    </tr>
+  `).join('');
+  el.innerHTML = `
+    <div class="section-header">
+      <h4>Active Endpoint Enumeration</h4>
+    </div>
+    ${progressLine}
+    <div class="tech-table-wrap">
+      <table class="tech-table">
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Status</th>
+            <th>Severity</th>
+            <th>Content-Type</th>
+            <th>Length</th>
+            <th>Risk Note</th>
+            <th>URL</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+  el.querySelectorAll('.copy-wp-endpoint-url-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const url = String(btn.dataset.url || '');
+      if (!url) {
+        showToast('No endpoint URL to copy.');
+        return;
+      }
+      copyToClipboard(url).then(() => showToast('Endpoint URL copied')).catch(() => showCopyModal(url));
+    });
+  });
+}
+
+function renderWordpressResults() {
+  const el = document.getElementById('wordpressResults');
+  if (!el) return;
+  if (wordpressAuditFindingsCache.length === 0) {
+    el.innerHTML = '<p class="scanner-ok">No WordPress signals detected yet. Run audit after browsing target pages.</p>';
+    return;
+  }
+  const rows = wordpressAuditFindingsCache.map((f, idx) => `
+    <tr>
+      <td>${escapeHtml(f.type)}</td>
+      <td>${escapeHtml(f.name)}</td>
+      <td>${escapeHtml((f.versions || []).join(', ') || '—')}</td>
+      <td><span class="tag ${escapeHtml(f.confidence || 'low')}">${escapeHtml(f.confidence || 'low')}</span></td>
+      <td><span class="tag ${escapeHtml(f.severity || 'low')}">${escapeHtml(f.severity || 'low')}</span></td>
+      <td class="tech-evidence" title="${escapeHtml((f.cves || []).map((c) => `${c.id} (${c.affectedVersion || 'n/a'})`).join('\n'))}">${escapeHtml((f.cves || []).map((c) => c.id).join(' | ') || '—')}</td>
+      <td class="tech-evidence" title="${escapeHtml((f.paths || []).join('\n'))}">${escapeHtml((f.paths || []).join(' | ') || '—')}</td>
+      <td class="tech-evidence" title="${escapeHtml((f.evidence || []).join('\n'))}">${escapeHtml((f.evidence || []).join(' | ') || '—')}</td>
+      <td class="tech-evidence" title="${escapeHtml((f.testHints || []).join('\n'))}">${escapeHtml((f.testHints || []).join(' | ') || '—')}</td>
+      <td class="tech-actions">
+        <button type="button" class="btn btn-small copy-wp-url-btn" data-index="${idx}">Copy URL</button>
+        <button type="button" class="btn btn-small copy-wp-cves-btn" data-index="${idx}">Copy CVEs</button>
+      </td>
+    </tr>
+  `).join('');
+  el.innerHTML = `
+    <div class="tech-table-wrap">
+      <table class="tech-table">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Name</th>
+            <th>Version(s)</th>
+            <th>Confidence</th>
+            <th>Severity</th>
+            <th>CVEs</th>
+            <th>URL(s)</th>
+            <th>Evidence</th>
+            <th>Test Hints</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  `;
+
+  el.querySelectorAll('.copy-wp-url-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.index || '-1', 10);
+      const f = wordpressAuditFindingsCache[idx];
+      if (!f || !(f.paths || []).length) {
+        showToast('No URL available for this finding.');
+        return;
+      }
+      const text = f.paths[0];
+      copyToClipboard(text).then(() => showToast('WordPress URL copied')).catch(() => showCopyModal(text));
+    });
+  });
+  el.querySelectorAll('.copy-wp-cves-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.index || '-1', 10);
+      const f = wordpressAuditFindingsCache[idx];
+      const cves = f?.cves || [];
+      if (!f || cves.length === 0) {
+        showToast('No CVEs available for this finding.');
+        return;
+      }
+      const text = cves.map((c) => `${c.id} (${c.affectedVersion || 'n/a'}) [${c.source || 'local'}] - ${c.summary}${c.url ? ` | ${c.url}` : ''}`).join('\n');
+      copyToClipboard(text).then(() => showToast('WordPress CVEs copied')).catch(() => showCopyModal(text));
+    });
+  });
+}
+
+function exportWordpressAudit(format) {
+  if (wordpressAuditFindingsCache.length === 0 && wordpressEndpointFindingsCache.length === 0) {
+    showToast('No WordPress audit results to export.');
+    return;
+  }
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  if (format === 'json') {
+    downloadText(`wordpress-audit-${ts}.json`, JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      metrics: wordpressAuditMeta,
+      findings: wordpressAuditFindingsCache,
+      endpointFindings: wordpressEndpointFindingsCache,
+    }, null, 2), 'application/json');
+    showToast('WordPress audit JSON exported.');
+    return;
+  }
+  const rows = [['recordType', 'type', 'name', 'status', 'versions', 'confidence', 'severity', 'cveStatus', 'cves', 'urls', 'contentType', 'length', 'riskNote', 'evidence', 'testHints']];
+  wordpressAuditFindingsCache.forEach((f) => {
+    rows.push([
+      'audit',
+      f.type,
+      f.name,
+      '',
+      (f.versions || []).join(' | '),
+      f.confidence || '',
+      f.severity || '',
+      f.cveStatus || '',
+      (f.cves || []).map((c) => `${c.id} (${c.affectedVersion || 'n/a'})`).join(' | '),
+      (f.paths || []).join(' | '),
+      '',
+      '',
+      '',
+      (f.evidence || []).join(' | '),
+      (f.testHints || []).join(' | '),
+    ]);
+  });
+  wordpressEndpointFindingsCache.forEach((f) => {
+    rows.push([
+      'endpoint',
+      'endpoint',
+      f.name || '',
+      String(f.status || ''),
+      '',
+      '',
+      f.severity || '',
+      '',
+      '',
+      f.url || '',
+      f.contentType || '',
+      f.length == null ? '' : String(f.length),
+      f.note || '',
+      '',
+      '',
+    ]);
+  });
+  const csv = rows.map((r) => r.map((v) => `"${String(v || '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  downloadText(`wordpress-audit-${ts}.csv`, csv, 'text/csv');
+  showToast('WordPress audit CSV exported.');
 }
 
 /**
@@ -3695,17 +5229,21 @@ function renderSecretResults() {
     el.innerHTML = '<p class="scanner-ok">No secrets detected yet. Browse pages to scan loaded JavaScript files.</p>';
     return;
   }
-  const rows = findings.map((f) => `
+  const allColumns = [
+    { key: 'type', header: 'Secret Type', cell: (f) => escapeHtml(f.type) },
+    { key: 'confidence', header: 'Confidence', cell: (f) => `<span class="tag ${escapeHtml(f.confidence)}">${escapeHtml(f.confidence)}</span>` },
+    { key: 'domain', header: 'Domain', cell: (f) => escapeHtml(f.domain) },
+    { key: 'fileKind', header: 'File Kind', cell: (f) => escapeHtml(f.fileKind) },
+    { key: 'filePath', header: 'File Path', cell: (f) => `<span class="tech-evidence" title="${escapeHtml(f.filePath)}">${escapeHtml(f.filePath)}</span>` },
+    { key: 'value', header: 'Value', cell: (f) => `<code class="tech-evidence" title="${escapeHtml(f.rawValue || f.masked || '')}">${escapeHtml(f.rawValue || f.masked || '')}</code>` },
+    { key: 'action', header: 'Action', cell: (_f, idx) => `<button type="button" class="btn btn-secondary btn-small" data-secret-copy-path="${idx}">Copy Path</button>` },
+  ];
+  const visibleColumns = allColumns.filter((col) => !secretHiddenColumns.has(col.key));
+  const safeColumns = visibleColumns.length ? visibleColumns : allColumns.filter((col) => col.key === 'action');
+  const headers = safeColumns.map((c) => `<th>${escapeHtml(c.header)}</th>`).join('');
+  const rows = findings.map((f, idx) => `
     <tr>
-      <td>${escapeHtml(f.type)}</td>
-      <td><span class="tag ${escapeHtml(f.confidence)}">${escapeHtml(f.confidence)}</span></td>
-      <td>${escapeHtml(f.domain)}</td>
-      <td>${escapeHtml(f.fileKind)}</td>
-      <td class="tech-evidence" title="${escapeHtml(f.filePath)}">${escapeHtml(f.filePath)}</td>
-      <td><code>${escapeHtml(f.masked)}</code></td>
-      <td><span class="tag ${escapeHtml(f.remoteValidationStatus === 'active' ? 'high' : f.remoteValidationStatus === 'inactive' ? 'medium' : 'low')}">${escapeHtml(f.remoteValidationStatus || 'not-run')}</span></td>
-      <td class="tech-evidence" title="${escapeHtml(f.evidence)}">${escapeHtml(f.evidence)}</td>
-      <td class="tech-evidence" title="${escapeHtml(f.why)}">${escapeHtml(f.why)}</td>
+      ${safeColumns.map((c) => `<td>${c.cell(f, idx)}</td>`).join('')}
     </tr>
   `).join('');
   el.innerHTML = `
@@ -3713,21 +5251,29 @@ function renderSecretResults() {
       <table class="tech-table">
         <thead>
           <tr>
-            <th>Secret Type</th>
-            <th>Confidence</th>
-            <th>Domain</th>
-            <th>File Kind</th>
-            <th>File Path</th>
-            <th>Masked Value</th>
-            <th>Remote Validation</th>
-            <th>Evidence Snippet</th>
-            <th>Why</th>
+            ${headers}
           </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
   `;
+}
+
+function copySecretFilePathByIndex(index) {
+  const i = Number(index);
+  if (!Number.isInteger(i) || i < 0 || i >= secretFilteredFindingsCache.length) {
+    showToast('Secret file path not found.');
+    return;
+  }
+  const filePath = String(secretFilteredFindingsCache[i]?.filePath || '');
+  if (!filePath) {
+    showToast('Secret file path is empty.');
+    return;
+  }
+  copyToClipboard(filePath)
+    .then(() => showToast('Secret file path copied.'))
+    .catch(() => showCopyModal(filePath));
 }
 
 function secretFindingsToMarkdown() {
@@ -3832,10 +5378,49 @@ function setupSecretScanner() {
   const apiToggle = document.getElementById('secretApiJsonToggle');
   const rulePackSelect = document.getElementById('secretRulePackSelect');
   const remoteToggle = document.getElementById('secretRemoteValidationToggle');
+  const resultsEl = document.getElementById('secretResults');
+  const columnsToggleBtn = document.getElementById('secretColumnsToggleBtn');
+  const columnsMenu = document.getElementById('secretColumnsMenu');
+  const columnChecks = [...document.querySelectorAll('#secretColumnsMenu [data-secret-col]')];
   domainFilter?.addEventListener('change', applySecretFilters);
   typeFilter?.addEventListener('change', applySecretFilters);
   confFilter?.addEventListener('change', applySecretFilters);
   search?.addEventListener('input', applySecretFilters);
+  columnChecks.forEach((check) => {
+    const key = check.getAttribute('data-secret-col');
+    if (!key || !SECRET_ALL_COLUMNS.includes(key)) return;
+    check.checked = !secretHiddenColumns.has(key);
+  });
+  columnsToggleBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    columnsMenu?.classList.toggle('hidden');
+  });
+  columnsMenu?.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    columnsMenu?.classList.add('hidden');
+  });
+  columnChecks.forEach((check) => {
+    check.addEventListener('change', (e) => {
+      const input = e.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      const key = input.getAttribute('data-secret-col');
+      if (!key || !SECRET_ALL_COLUMNS.includes(key)) return;
+      if (input.checked) {
+        secretHiddenColumns.delete(key);
+      } else {
+        secretHiddenColumns.add(key);
+      }
+      saveScopeBlockLists();
+      applySecretFilters();
+    });
+  });
+  resultsEl?.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!(target instanceof HTMLElement)) return;
+    const btn = target.closest('[data-secret-copy-path]');
+    if (!btn) return;
+    copySecretFilePathByIndex(btn.getAttribute('data-secret-copy-path'));
+  });
   if (apiToggle) {
     apiToggle.checked = secretScanApiJsonEnabled;
     apiToggle.addEventListener('change', (e) => {
@@ -4325,7 +5910,6 @@ async function runSecurityScan(options = {}) {
     renderScannerMeta();
     renderScannerSuppressions();
     if (scannerVisible) applyScannerFilters();
-    renderOwaspFindings();
   } catch (err) {
     if (!silent || scannerVisible) {
       resultsEl.innerHTML = `<p class="scanner-error">${escapeHtml(err.message)}</p>`;

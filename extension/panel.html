@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HackTools++</title>
+  <title>HackTools++ Beta</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -24,6 +24,7 @@
             <option value="PUT">PUT</option>
             <option value="DELETE">DELETE</option>
             <option value="PATCH">PATCH</option>
+            <option value="WS">WS</option>
           </select>
           <select id="statusFilter" class="filter-select">
             <option value="">All Status</option>
@@ -69,8 +70,9 @@
         <button type="button" class="mode-tab" data-mode="decoder">Decoder</button>
         <button type="button" class="mode-tab" data-mode="scanner">Scanner</button>
         <button type="button" class="mode-tab" data-mode="tech">Tech Detector</button>
+        <button type="button" class="mode-tab" data-mode="wordpress">WordPress Audit</button>
+        <button type="button" class="mode-tab" data-mode="websocket">WebSocket</button>
         <button type="button" class="mode-tab" data-mode="secret">Secret Scanner</button>
-        <button type="button" class="mode-tab" data-mode="owasp">OWASP Finding</button>
       </div>
 
       <div id="repeaterPanel" class="mode-panel">
@@ -317,6 +319,107 @@
         </div>
       </div>
 
+      <div id="wordpressPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>WordPress Audit (Passive MVP)</h3>
+            <div class="scanner-actions">
+              <button type="button" id="runWordpressAuditBtn" class="btn btn-primary">Run Audit</button>
+              <button type="button" id="runWordpressEndpointScanBtn" class="btn btn-secondary">Run Endpoint Scan</button>
+              <button type="button" id="stopWordpressEndpointScanBtn" class="btn btn-secondary hidden">Stop Scan</button>
+              <button type="button" id="importWordpressWordlistBtn" class="btn btn-secondary">Import Wordlist</button>
+              <input type="file" id="wordpressWordlistFileInput" accept=".txt,.lst,.list,.csv" class="hidden">
+              <button type="button" id="exportWordpressJsonBtn" class="btn btn-secondary">Export JSON</button>
+              <button type="button" id="exportWordpressCsvBtn" class="btn btn-secondary">Export CSV</button>
+            </div>
+          </div>
+          <div class="ws-config-row">
+            <input id="wordpressBaseUrlInput" class="search-input ws-replace-input" placeholder="Base URL (optional) e.g. https://target.com/">
+            <select id="wordpressEnumModeSelect" class="filter-select scanner-filter-select">
+              <option value="passive">Passive only</option>
+              <option value="safe-active" selected>Safe active</option>
+              <option value="aggressive">Aggressive</option>
+            </select>
+            <label class="scanner-auto-toggle">
+              <input type="checkbox" id="wordpressIncludeStaticToggle">
+              Include static assets
+            </label>
+          </div>
+          <textarea id="wordpressWordlistInput" class="payload-textarea" placeholder="Optional custom wordlist (one endpoint path per line). Example:&#10;wp-login.php&#10;xmlrpc.php&#10;wp-json/wp/v2/users"></textarea>
+          <div class="ws-config-row">
+            <select id="wordpressEndpointStatusFilter" class="filter-select scanner-filter-select">
+              <option value="">All Status</option>
+              <option value="2xx">2xx</option>
+              <option value="3xx">3xx</option>
+              <option value="4xx">4xx</option>
+              <option value="5xx">5xx</option>
+              <option value="other">Other</option>
+            </select>
+            <input id="wordpressEndpointSearchInput" class="search-input ws-replace-input" placeholder="Search path, url, note...">
+          </div>
+          <div id="wordpressMeta" class="scanner-meta"></div>
+          <div id="wordpressResults" class="scanner-results"></div>
+          <div id="wordpressEndpointResults" class="scanner-results"></div>
+        </div>
+      </div>
+
+      <div id="websocketPanel" class="mode-panel hidden">
+        <div class="scanner-layout">
+          <div class="section-header">
+            <h3>WebSocket Interceptor</h3>
+            <div class="scanner-actions">
+              <button type="button" id="wsEnableBtn" class="btn btn-primary">Enable Interceptor</button>
+              <button type="button" id="wsRefreshBtn" class="btn btn-secondary">Refresh</button>
+              <button type="button" id="wsClearBtn" class="btn btn-secondary">Clear Logs</button>
+            </div>
+          </div>
+          <div id="wsMeta" class="scanner-meta"></div>
+          <div class="ws-config-row">
+            <label class="scanner-auto-toggle">
+              Connection
+              <select id="wsConnectionSelect" class="filter-select scanner-filter-select">
+                <option value="">Select open socket...</option>
+              </select>
+            </label>
+            <label class="scanner-auto-toggle">
+              <input type="checkbox" id="wsBlockOutgoingToggle">
+              Block outgoing
+            </label>
+            <input id="wsReplaceFromInput" class="search-input ws-replace-input" placeholder="Replace from (optional)">
+            <input id="wsReplaceToInput" class="search-input ws-replace-input" placeholder="Replace to (optional)">
+            <button type="button" id="wsApplyRuleBtn" class="btn btn-secondary">Apply Rule</button>
+          </div>
+          <div class="ws-send-row">
+            <textarea id="wsSendInput" class="body-editor ws-send-editor" placeholder='{"type":"ping"}'></textarea>
+            <button type="button" id="wsSendBtn" class="btn btn-primary">Send to Selected</button>
+          </div>
+          <div class="ws-config-row">
+            <select id="wsDirectionFilter" class="filter-select scanner-filter-select">
+              <option value="">All directions</option>
+              <option value="in">To client</option>
+              <option value="out">To server</option>
+              <option value="blocked">Blocked</option>
+              <option value="meta">Meta</option>
+            </select>
+            <input id="wsSearchInput" class="search-input ws-replace-input" placeholder="Search URL / payload / connection...">
+          </div>
+          <div id="wsResults" class="scanner-results"></div>
+          <div id="wsDetailPanel" class="ws-detail-panel hidden">
+            <div class="section-header">
+              <h4>Message Detail</h4>
+            </div>
+            <div class="response-tabs ws-detail-tabs">
+              <button type="button" class="tab-btn active" data-ws-detail-tab="pretty">Pretty</button>
+              <button type="button" class="tab-btn" data-ws-detail-tab="raw">Raw</button>
+              <button type="button" class="tab-btn" data-ws-detail-tab="hex">Hex</button>
+            </div>
+            <pre id="wsDetailPretty" class="response-pretty"></pre>
+            <pre id="wsDetailRaw" class="response-raw hidden"></pre>
+            <pre id="wsDetailHex" class="response-headers hidden"></pre>
+          </div>
+        </div>
+      </div>
+
       <div id="secretPanel" class="mode-panel hidden">
         <div class="scanner-layout">
           <div class="section-header">
@@ -348,6 +451,18 @@
                 <option value="low">Low</option>
               </select>
               <input id="secretSearchInput" class="search-input scanner-search-input" placeholder="Search files, types, snippets...">
+              <div class="secret-columns-control">
+                <button type="button" id="secretColumnsToggleBtn" class="btn btn-secondary">Columns</button>
+                <div id="secretColumnsMenu" class="secret-columns-menu hidden">
+                  <label><input type="checkbox" data-secret-col="type" checked> Secret Type</label>
+                  <label><input type="checkbox" data-secret-col="confidence" checked> Confidence</label>
+                  <label><input type="checkbox" data-secret-col="domain" checked> Domain</label>
+                  <label><input type="checkbox" data-secret-col="fileKind" checked> File Kind</label>
+                  <label><input type="checkbox" data-secret-col="filePath" checked> File Path</label>
+                  <label><input type="checkbox" data-secret-col="value" checked> Value</label>
+                  <label><input type="checkbox" data-secret-col="action" checked> Action</label>
+                </div>
+              </div>
               <button type="button" id="exportSecretJsonBtn" class="btn btn-secondary">Export JSON</button>
               <button type="button" id="exportSecretCsvBtn" class="btn btn-secondary">Export CSV</button>
               <button type="button" id="copySecretMdBtn" class="btn btn-secondary">Copy Markdown</button>
@@ -360,21 +475,6 @@
         </div>
       </div>
 
-      <div id="owaspPanel" class="mode-panel hidden">
-        <div class="scanner-layout">
-          <div class="section-header">
-            <h3>OWASP Findings</h3>
-            <div class="scanner-actions">
-              <button type="button" id="refreshOwaspBtn" class="btn btn-primary">Refresh</button>
-              <button type="button" id="exportOwaspJsonBtn" class="btn btn-secondary">Export JSON</button>
-              <button type="button" id="exportOwaspCsvBtn" class="btn btn-secondary">Export CSV</button>
-              <button type="button" id="copyOwaspMdBtn" class="btn btn-secondary">Copy Markdown</button>
-            </div>
-          </div>
-          <div id="owaspMeta" class="scanner-meta"></div>
-          <div id="owaspResults" class="scanner-results"></div>
-        </div>
-      </div>
     </main>
 
     <!-- Right Sidebar: AI Assist -->

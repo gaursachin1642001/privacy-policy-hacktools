@@ -462,6 +462,14 @@ body {
   margin-right: 6px;
 }
 
+.request-item .method-ws {
+  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  border-radius: 10px;
+  padding: 1px 6px;
+}
+
 .request-item .url {
   color: var(--text-primary);
   font-size: 11px;
@@ -806,6 +814,114 @@ body {
 
 .scanner-search-input {
   width: 180px;
+}
+
+.ws-config-row {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ws-replace-input {
+  width: 180px;
+}
+
+.ws-send-row {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.ws-send-editor {
+  min-height: 72px;
+}
+
+.ws-group-row td {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.ws-frame-row {
+  cursor: pointer;
+}
+
+.ws-frame-row.selected td {
+  background: rgba(88, 166, 255, 0.14);
+}
+
+.ws-log-direction {
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.ws-log-direction.out {
+  color: #ffcf66;
+}
+
+.ws-log-direction.in {
+  color: #7dd3fc;
+}
+
+.ws-log-direction.blocked {
+  color: #f87171;
+}
+
+.ws-log-direction.meta {
+  color: var(--text-secondary);
+}
+
+.ws-detail-panel {
+  margin-top: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-secondary);
+}
+
+.ws-copy-payload-btn {
+  margin-left: 8px;
+}
+
+.secret-columns-control {
+  position: relative;
+}
+
+.secret-columns-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 190px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  padding: 8px;
+  z-index: 80;
+}
+
+.secret-columns-menu.hidden {
+  display: none;
+}
+
+.secret-columns-menu label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 4px 2px;
+  cursor: pointer;
+}
+
+.secret-columns-menu label:hover {
+  color: var(--text-primary);
 }
 
 .scanner-meta {
