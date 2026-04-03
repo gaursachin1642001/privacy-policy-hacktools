@@ -15,10 +15,10 @@
 </head>
 <body>
   <h1>Privacy Policy for HackTools++</h1>
-  <p><strong>Last updated:</strong> [Add date before publishing]</p>
+  <p><strong>Last updated:</strong> 25 Feb 2026</p>
 
   <h2>Overview</h2>
-  <p>HackTools++ ("the Extension") is a Chrome extension that provides a security testing toolkit inside Chrome DevTools, including Repeater, Intruder, Decoder, and Scanner. This privacy policy explains how the Extension handles user data.</p>
+  <p>HackTools++ ("the Extension") is a Chrome extension that provides a security testing toolkit inside Chrome DevTools, including Repeater, Intruder, Decoder, Scanner, Tech Detector, OWASP Finding, and Secret Scanner. This privacy policy explains how the Extension handles user data.</p>
 
   <h2>Data Collection</h2>
   <p><strong>The Extension does not collect, store, or transmit any personal data to external servers.</strong></p>
@@ -27,6 +27,8 @@
     <li><strong>Captured requests:</strong> Displayed in the extension panel; not sent to any server</li>
     <li><strong>Scope/Block lists:</strong> Stored in Chrome's local storage on your device</li>
     <li><strong>Saved requests:</strong> Stored locally in Chrome storage (if used)</li>
+    <li><strong>Tech detection / OWASP analysis results:</strong> Generated and displayed locally in DevTools; not transmitted externally</li>
+    <li><strong>Secret scanner findings:</strong> Generated from runtime/build JS assets locally in DevTools; not transmitted externally</li>
   </ul>
 
   <h2>Permissions</h2>
@@ -34,11 +36,9 @@
   <table>
     <tr><th>Permission</th><th>Purpose</th></tr>
     <tr><td>storage</td><td>Save scope/block domain lists and user preferences locally</td></tr>
-    <tr><td>activeTab</td><td>Access the active tab to capture network requests</td></tr>
-    <tr><td>scripting</td><td>Required for DevTools panel integration</td></tr>
-    <tr><td>webRequest</td><td>Observe network requests from the active tab for capture</td></tr>
+    <tr><td>scripting</td><td>Run scanner and technology checks in the inspected page context</td></tr>
     <tr><td>cookies</td><td>Include cookies when replaying requests (user-initiated)</td></tr>
-    <tr><td>host_permissions: &lt;all_urls&gt;</td><td>Replay requests to any URL the user specifies</td></tr>
+    <tr><td>host_permissions: &lt;all_urls&gt;</td><td>Replay requests to user-specified targets and capture responses in DevTools</td></tr>
   </table>
   <p>None of these permissions are used to collect or transmit data to third parties.</p>
 
@@ -46,6 +46,8 @@
   <ul>
     <li>Requests are captured only when the user has the DevTools HackTools++ panel open</li>
     <li>Replayed requests are sent directly from the extension to the target URL (user-initiated)</li>
+    <li>Tech Detector and OWASP Finding process data locally to generate findings in the DevTools UI</li>
+    <li>Secret Scanner inspects loaded JavaScript assets locally (including runtime/build chunks) to detect potential secrets</li>
     <li>No analytics, tracking, or telemetry is used</li>
   </ul>
 
@@ -63,6 +65,6 @@
   <p>We may update this privacy policy from time to time. The "Last updated" date at the top will reflect any changes.</p>
 
   <h2>Contact</h2>
-  <p>For questions about this privacy policy, please contact [your email or support URL].</p>
+  <p>For questions about this privacy policy, please contact kumarsachin1642001@gmail.com.</p>
 </body>
 </html>

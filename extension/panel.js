@@ -79,6 +79,8 @@ let secretScanRunning = false;
 let secretQueueTimer = null;
 const SECRET_SCAN_MAX_BYTES = 500000;
 const SECRET_SCAN_SLICE_MS = 30;
+// Temporary production toggle: keep WebSocket module code in repo but disable runtime/UI.
+const WEBSOCKET_FEATURE_ENABLED = false;
 let secretScanMeta = {
   total: 0,
   high: 0,
@@ -102,6 +104,22 @@ let wsInterceptConfig = {
   replaceFrom: '',
   replaceTo: '',
 };
+let leftSidebarWidth = 280;
+let rightSidebarWidth = 280;
+let intruderConfigWidth = 400;
+let repeaterEditorHeight = 360;
+let uiShowAdvancedTabs = false;
+let quickStartDismissed = false;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const MAIN_MIN_WIDTH = 540;
+const INTRUDER_MIN_WIDTH = 320;
+const INTRUDER_RESULTS_MIN_WIDTH = 420;
+const REPEATER_EDITOR_MIN_HEIGHT = 180;
+const REPEATER_RESPONSE_MIN_HEIGHT = 170;
+const ADVANCED_MODES = new Set(['intruder', 'decoder', 'tech', 'wordpress', 'secret', 'websocket']);
+// Google Form URL used to collect uninstall/feedback reasons.
+const FEEDBACK_FORM_URL = 'https://forms.gle/JUA2G6LuEbfms5dq8';
 
 // DOM Elements
 const requestList = document.getElementById('requestList');
@@ -121,8 +139,19 @@ const statusCodeEl = document.getElementById('statusCode');
 const responseSizeEl = document.getElementById('responseSize');
 const contentTypeEl = document.getElementById('contentType');
 const endpointAnalysisEl = document.getElementById('endpointAnalysis');
+const appEl = document.getElementById('app');
 const requestsSidebarEl = document.getElementById('requestsSidebar');
 const aiSidebarEl = document.getElementById('aiSidebar');
+const mainContentEl = document.querySelector('.main-content');
+const leftResizerEl = document.getElementById('leftResizer');
+const rightResizerEl = document.getElementById('rightResizer');
+const repeaterPanelEl = document.getElementById('repeaterPanel');
+const repeaterEditorSectionEl = document.getElementById('repeaterEditorSection');
+const repeaterResponseSectionEl = document.getElementById('repeaterResponseSection');
+const repeaterResizerEl = document.getElementById('repeaterResizer');
+const intruderConfigPanelEl = document.getElementById('intruderConfigPanel');
+const intruderResizerEl = document.getElementById('intruderResizer');
+const intruderLayoutEl = document.querySelector('.intruder-layout');
 const repeaterTabsEl = document.getElementById('repeaterTabs');
 const repeaterHistoryListEl = document.getElementById('repeaterHistoryList');
 
@@ -140,8 +169,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupScanner();
   setupTechDetector();
   setupWordpressAudit();
-  setupWebSocketTools();
+  if (WEBSOCKET_FEATURE_ENABLED) setupWebSocketTools();
   setupSecretScanner();
+  setupResizablePanels();
   initRepeaterWorkspace();
   renderRepeaterHistory();
   renderRequestList();
@@ -162,7 +192,10 @@ function shouldCaptureRequest(url) {
   }
 
   // Ignore internal/devtools/extension placeholder traffic.
-  if (!['http:', 'https:', 'ws:', 'wss:'].includes(protocol)) return false;
+  const allowedProtocols = WEBSOCKET_FEATURE_ENABLED
+    ? ['http:', 'https:', 'ws:', 'wss:']
+    : ['http:', 'https:'];
+  if (!allowedProtocols.includes(protocol)) return false;
   if (!host || host === 'invalid') return false;
 
   // Block takes precedence
@@ -314,10 +347,10 @@ function scheduleAutoSecurityScan() {
  */
 async function loadScopeBlockLists() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['scopeDomains', 'blockDomains', 'scannerAutoEnabled', 'scannerSuppressions', 'techLiveCveEnabled', 'techCveCache', 'secretScanApiJsonEnabled', 'secretRulePack', 'secretRemoteValidationEnabled', 'secretHiddenColumns', 'wsInterceptConfig'], (result) => {
+    chrome.storage.local.get(['scopeDomains', 'blockDomains', 'scannerAutoEnabled', 'scannerSuppressions', 'techLiveCveEnabled', 'techCveCache', 'secretScanApiJsonEnabled', 'secretRulePack', 'secretRemoteValidationEnabled', 'secretHiddenColumns', 'wsInterceptConfig', 'panelLayout', 'uiShowAdvancedTabs', 'quickStartDismissed'], (result) => {
       scopeDomains = result.scopeDomains || [];
       blockDomains = result.blockDomains || [];
-      scannerAutoEnabled = result.scannerAutoEnabled !== false;
+      scannerAutoEnabled = result.scannerAutoEnabled === true;
       scannerSuppressions = result.scannerSuppressions || { keys: [], domains: [] };
       techLiveCveEnabled = result.techLiveCveEnabled === true;
       techCveCache = result.techCveCache || {};
@@ -331,6 +364,16 @@ async function loadScopeBlockLists() {
         replaceFrom: String(result.wsInterceptConfig?.replaceFrom || ''),
         replaceTo: String(result.wsInterceptConfig?.replaceTo || ''),
       };
+      leftSidebarWidth = Number(result.panelLayout?.leftSidebarWidth) || SIDEBAR_DEFAULT_WIDTH;
+      rightSidebarWidth = Number(result.panelLayout?.rightSidebarWidth) || SIDEBAR_DEFAULT_WIDTH;
+      intruderConfigWidth = Number(result.panelLayout?.intruderConfigWidth) || 400;
+      repeaterEditorHeight = Number(result.panelLayout?.repeaterEditorHeight) || 360;
+      uiShowAdvancedTabs = result.uiShowAdvancedTabs === true;
+      quickStartDismissed = result.quickStartDismissed === true;
+      applySidebarWidths();
+      applyWorkspaceSplitSizes();
+      applyAdvancedTabsVisibility();
+      applyQuickStartVisibility();
       const autoToggle = document.getElementById('scannerAutoToggle');
       if (autoToggle) autoToggle.checked = scannerAutoEnabled;
       const secretApiToggle = document.getElementById('secretApiJsonToggle');
@@ -360,6 +403,14 @@ function saveScopeBlockLists() {
     secretRemoteValidationEnabled,
     secretHiddenColumns: [...secretHiddenColumns],
     wsInterceptConfig,
+    panelLayout: {
+      leftSidebarWidth,
+      rightSidebarWidth,
+      intruderConfigWidth,
+      repeaterEditorHeight,
+    },
+    uiShowAdvancedTabs,
+    quickStartDismissed,
   });
 }
 
@@ -511,9 +562,27 @@ function setupEventListeners() {
     if (e.key === 'Enter') addDomain('block');
   });
   document.getElementById('sendToIntruderBtn').addEventListener('click', sendToIntruder);
+  document.getElementById('advancedTabsToggleBtn')?.addEventListener('click', () => {
+    uiShowAdvancedTabs = !uiShowAdvancedTabs;
+    applyAdvancedTabsVisibility();
+    saveScopeBlockLists();
+  });
+  document.getElementById('dismissQuickStartBtn')?.addEventListener('click', () => {
+    quickStartDismissed = true;
+    applyQuickStartVisibility();
+    saveScopeBlockLists();
+  });
+  document.getElementById('openFeedbackFormBtn')?.addEventListener('click', openFeedbackForm);
+  document.getElementById('headerFeedbackBtn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openFeedbackForm();
+  });
 
   document.querySelectorAll('.mode-tab').forEach((tab) => {
-    tab.addEventListener('click', () => switchMode(tab.dataset.mode));
+    tab.addEventListener('click', () => {
+      if (tab.id === 'headerFeedbackBtn') return;
+      switchMode(tab.dataset.mode);
+    });
   });
 
   repeaterTabsEl.addEventListener('click', (e) => {
@@ -533,6 +602,211 @@ function setupEventListeners() {
   });
 }
 
+function openFeedbackForm() {
+  const url = String(FEEDBACK_FORM_URL || '').trim();
+  if (!url || /YOUR_FORM_ID/.test(url)) {
+    showToast('Set FEEDBACK_FORM_URL in panel.js first.');
+    showCopyModal('Update FEEDBACK_FORM_URL in extension/panel.js with your Google Form link.');
+    return;
+  }
+  try {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    showToast('Feedback form opened.');
+  } catch (_) {
+    showToast('Unable to open feedback form.');
+  }
+}
+
+function applyAdvancedTabsVisibility() {
+  document.querySelectorAll('[data-advanced-tab="true"]').forEach((tab) => {
+    tab.classList.toggle('hidden', !uiShowAdvancedTabs);
+  });
+  const toggleBtn = document.getElementById('advancedTabsToggleBtn');
+  if (toggleBtn) {
+    toggleBtn.textContent = `Advanced: ${uiShowAdvancedTabs ? 'On' : 'Off'}`;
+    toggleBtn.title = uiShowAdvancedTabs ? 'Hide advanced tools' : 'Show advanced tools';
+  }
+}
+
+function applyQuickStartVisibility() {
+  const card = document.getElementById('quickStartCard');
+  if (!card) return;
+  card.classList.toggle('hidden', quickStartDismissed);
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function applySidebarWidths() {
+  const appWidth = appEl?.getBoundingClientRect().width || window.innerWidth || 1200;
+  const collapsedWidth = 36;
+  const resizerTotal = 12; // 2 resizers x 6px
+  const maxExpanded = Math.max(
+    SIDEBAR_MIN_WIDTH,
+    appWidth - MAIN_MIN_WIDTH - collapsedWidth - resizerTotal
+  );
+
+  leftSidebarWidth = clampNumber(leftSidebarWidth || SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, maxExpanded);
+  rightSidebarWidth = clampNumber(rightSidebarWidth || SIDEBAR_DEFAULT_WIDTH, SIDEBAR_MIN_WIDTH, maxExpanded);
+
+  if (requestsSidebarEl && !requestsSidebarEl.classList.contains('collapsed')) {
+    requestsSidebarEl.style.width = `${leftSidebarWidth}px`;
+    requestsSidebarEl.style.minWidth = `${leftSidebarWidth}px`;
+  } else if (requestsSidebarEl) {
+    requestsSidebarEl.style.width = '';
+    requestsSidebarEl.style.minWidth = '';
+  }
+
+  if (aiSidebarEl && !aiSidebarEl.classList.contains('collapsed')) {
+    aiSidebarEl.style.width = `${rightSidebarWidth}px`;
+    aiSidebarEl.style.minWidth = `${rightSidebarWidth}px`;
+  } else if (aiSidebarEl) {
+    aiSidebarEl.style.width = '';
+    aiSidebarEl.style.minWidth = '';
+  }
+
+  if (leftResizerEl) {
+    leftResizerEl.classList.toggle('disabled', requestsSidebarEl?.classList.contains('collapsed'));
+  }
+  if (rightResizerEl) {
+    rightResizerEl.classList.toggle('disabled', aiSidebarEl?.classList.contains('collapsed'));
+  }
+}
+
+function applyWorkspaceSplitSizes() {
+  if (intruderLayoutEl && intruderConfigPanelEl) {
+    const layoutRect = intruderLayoutEl.getBoundingClientRect();
+    if (layoutRect.width > 100) {
+      const maxIntruderWidth = Math.max(
+        INTRUDER_MIN_WIDTH,
+        Math.floor(layoutRect.width - INTRUDER_RESULTS_MIN_WIDTH - 6)
+      );
+      intruderConfigWidth = clampNumber(intruderConfigWidth || 400, INTRUDER_MIN_WIDTH, maxIntruderWidth);
+      intruderConfigPanelEl.style.width = `${intruderConfigWidth}px`;
+      intruderConfigPanelEl.style.minWidth = `${intruderConfigWidth}px`;
+    }
+  }
+
+  if (repeaterPanelEl && repeaterEditorSectionEl && repeaterResponseSectionEl) {
+    const panelRect = repeaterPanelEl.getBoundingClientRect();
+    if (panelRect.height > 120 && !repeaterPanelEl.classList.contains('hidden')) {
+      const maxEditorHeight = Math.max(
+        REPEATER_EDITOR_MIN_HEIGHT,
+        Math.floor(panelRect.height - REPEATER_RESPONSE_MIN_HEIGHT - 6)
+      );
+      repeaterEditorHeight = clampNumber(
+        repeaterEditorHeight || 360,
+        REPEATER_EDITOR_MIN_HEIGHT,
+        maxEditorHeight
+      );
+      repeaterEditorSectionEl.style.flex = `0 0 ${repeaterEditorHeight}px`;
+      repeaterEditorSectionEl.style.height = `${repeaterEditorHeight}px`;
+      repeaterResponseSectionEl.style.flex = '1 1 auto';
+    }
+  }
+}
+
+function setupResizablePanels() {
+  if (!appEl || !requestsSidebarEl || !aiSidebarEl || !leftResizerEl || !rightResizerEl || !mainContentEl) return;
+
+  const onPointerDown = (side, e) => {
+    const targetSidebar = side === 'left' ? requestsSidebarEl : aiSidebarEl;
+    if (targetSidebar.classList.contains('collapsed')) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+
+    const appRect = appEl.getBoundingClientRect();
+    const leftCollapsed = requestsSidebarEl.classList.contains('collapsed');
+    const rightCollapsed = aiSidebarEl.classList.contains('collapsed');
+    const effectiveLeft = leftCollapsed ? 36 : leftSidebarWidth;
+    const effectiveRight = rightCollapsed ? 36 : rightSidebarWidth;
+    const availableForSide = appRect.width - MAIN_MIN_WIDTH - 12 - (side === 'left' ? effectiveRight : effectiveLeft);
+    const maxSize = Math.max(SIDEBAR_MIN_WIDTH, Math.floor(availableForSide));
+
+    appEl.classList.add('resizing');
+    const activeResizer = side === 'left' ? leftResizerEl : rightResizerEl;
+    activeResizer.classList.add('active');
+
+    const onMove = (moveEvt) => {
+      if (side === 'left') {
+        const raw = moveEvt.clientX - appRect.left;
+        leftSidebarWidth = clampNumber(raw, SIDEBAR_MIN_WIDTH, maxSize);
+      } else {
+        const raw = appRect.right - moveEvt.clientX;
+        rightSidebarWidth = clampNumber(raw, SIDEBAR_MIN_WIDTH, maxSize);
+      }
+      applySidebarWidths();
+    };
+
+    const onUp = () => {
+      appEl.classList.remove('resizing');
+      activeResizer.classList.remove('active');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      saveScopeBlockLists();
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  };
+
+  leftResizerEl.addEventListener('pointerdown', (e) => onPointerDown('left', e));
+  rightResizerEl.addEventListener('pointerdown', (e) => onPointerDown('right', e));
+  intruderResizerEl?.addEventListener('pointerdown', (e) => {
+    if (!intruderLayoutEl || !intruderConfigPanelEl || e.button !== 0) return;
+    e.preventDefault();
+    const layoutRect = intruderLayoutEl.getBoundingClientRect();
+    if (layoutRect.width <= 100) return;
+    const maxSize = Math.max(INTRUDER_MIN_WIDTH, Math.floor(layoutRect.width - INTRUDER_RESULTS_MIN_WIDTH - 6));
+    appEl.classList.add('resizing');
+    intruderResizerEl.classList.add('active');
+
+    const onMove = (moveEvt) => {
+      intruderConfigWidth = clampNumber(moveEvt.clientX - layoutRect.left, INTRUDER_MIN_WIDTH, maxSize);
+      applyWorkspaceSplitSizes();
+    };
+    const onUp = () => {
+      appEl.classList.remove('resizing');
+      intruderResizerEl.classList.remove('active');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      saveScopeBlockLists();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  });
+
+  repeaterResizerEl?.addEventListener('pointerdown', (e) => {
+    if (!repeaterPanelEl || !repeaterEditorSectionEl || e.button !== 0) return;
+    e.preventDefault();
+    const panelRect = repeaterPanelEl.getBoundingClientRect();
+    if (panelRect.height <= 120) return;
+    const maxSize = Math.max(REPEATER_EDITOR_MIN_HEIGHT, Math.floor(panelRect.height - REPEATER_RESPONSE_MIN_HEIGHT - 6));
+    appEl.classList.add('resizing');
+    repeaterResizerEl.classList.add('active');
+
+    const onMove = (moveEvt) => {
+      repeaterEditorHeight = clampNumber(moveEvt.clientY - panelRect.top, REPEATER_EDITOR_MIN_HEIGHT, maxSize);
+      applyWorkspaceSplitSizes();
+    };
+    const onUp = () => {
+      appEl.classList.remove('resizing');
+      repeaterResizerEl.classList.remove('active');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      saveScopeBlockLists();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  });
+
+  window.addEventListener('resize', applySidebarWidths);
+  window.addEventListener('resize', applyWorkspaceSplitSizes);
+  applySidebarWidths();
+  applyWorkspaceSplitSizes();
+}
+
 function toggleSidebar(type) {
   const sidebar = type === 'requests' ? requestsSidebarEl : aiSidebarEl;
   const btnId = type === 'requests' ? 'toggleRequestsSidebarBtn' : 'toggleAiSidebarBtn';
@@ -546,6 +820,8 @@ function toggleSidebar(type) {
     btn.textContent = collapsed ? '«' : '»';
     btn.title = collapsed ? 'Expand AI Assist' : 'Minimize AI Assist';
   }
+  applySidebarWidths();
+  saveScopeBlockLists();
 }
 
 function getRepeaterTabTitle(request) {
@@ -936,6 +1212,9 @@ function selectRequest(req, index) {
     showToast('Opened WebSocket tools for selected capture.');
     return;
   }
+
+  // One-click workflow: selecting a captured HTTP request always opens Repeater.
+  switchMode('repeater');
 
   methodSelect.value = req.request.method;
   urlInput.value = req.request.url;
@@ -1444,6 +1723,14 @@ function showToast(message) {
  * Switch between Repeater, Intruder, and Decoder modes
  */
 function switchMode(mode) {
+  if (!WEBSOCKET_FEATURE_ENABLED && mode === 'websocket') {
+    showToast('WebSocket module is temporarily disabled.');
+    mode = 'repeater';
+  }
+  if (!uiShowAdvancedTabs && ADVANCED_MODES.has(mode)) {
+    showToast('Enable Advanced tabs to access this module.');
+    mode = 'repeater';
+  }
   document.querySelectorAll('.mode-tab').forEach((t) => t.classList.toggle('active', t.dataset.mode === mode));
   document.getElementById('repeaterPanel').classList.toggle('hidden', mode !== 'repeater');
   document.getElementById('intruderPanel').classList.toggle('hidden', mode !== 'intruder');
@@ -1451,8 +1738,9 @@ function switchMode(mode) {
   document.getElementById('scannerPanel').classList.toggle('hidden', mode !== 'scanner');
   document.getElementById('techPanel').classList.toggle('hidden', mode !== 'tech');
   document.getElementById('wordpressPanel').classList.toggle('hidden', mode !== 'wordpress');
-  document.getElementById('websocketPanel').classList.toggle('hidden', mode !== 'websocket');
+  document.getElementById('websocketPanel').classList.toggle('hidden', mode !== 'websocket' || !WEBSOCKET_FEATURE_ENABLED);
   document.getElementById('secretPanel').classList.toggle('hidden', mode !== 'secret');
+  applyWorkspaceSplitSizes();
   if (mode === 'scanner' && scannerFindingsCache.length > 0) {
     applyScannerFilters();
   }
@@ -1464,7 +1752,7 @@ function switchMode(mode) {
     renderWordpressResults();
     renderWordpressEndpointResults();
   }
-  if (mode === 'websocket') {
+  if (WEBSOCKET_FEATURE_ENABLED && mode === 'websocket') {
     installWebSocketInterceptor()
       .then(() => refreshWebSocketState().catch(() => {}))
       .catch(() => {});
@@ -3736,7 +4024,7 @@ function renderWordpressEndpointResults(progress = null) {
     ? `<div class="supp-title">${progress.scanning ? 'Scanning' : 'Scan complete'} (${escapeHtml(progress.mode || 'n/a')}): ${escapeHtml(String(progress.scanned || 0))}/${escapeHtml(String(progress.total || 0))}${progress.stopEarly ? ` · stopped early (${escapeHtml(progress.stopReason || 'throttle detected')})` : ''} · filter=${escapeHtml(filterLabel)} · showing ${escapeHtml(String(filtered.length))}/${escapeHtml(String(wordpressEndpointFindingsCache.length))}</div>`
     : '';
   if (wordpressEndpointFindingsCache.length === 0) {
-    el.innerHTML = `${progressLine}<p class="scanner-ok">No active endpoint hits yet. Use Run Endpoint Scan to enumerate.</p>`;
+    el.innerHTML = `${progressLine}<div class="empty-state"><strong>No endpoint results yet.</strong><p>Set base URL (optional), choose scan mode, import wordlist if needed, then click Run Endpoint Scan.</p></div>`;
     return;
   }
   if (filtered.length === 0) {
@@ -3796,7 +4084,7 @@ function renderWordpressResults() {
   const el = document.getElementById('wordpressResults');
   if (!el) return;
   if (wordpressAuditFindingsCache.length === 0) {
-    el.innerHTML = '<p class="scanner-ok">No WordPress signals detected yet. Run audit after browsing target pages.</p>';
+    el.innerHTML = '<div class="empty-state"><strong>No WordPress signals detected yet.</strong><p>Browse target pages first, then run passive audit. WordPress fingerprints are collected from captured traffic and runtime assets.</p></div>';
     return;
   }
   const rows = wordpressAuditFindingsCache.map((f, idx) => `
@@ -4049,6 +4337,7 @@ function inferWhyFlagged(finding) {
     headers: 'Security headers are missing, reducing browser-side protections.',
     storage: 'Sensitive data in web storage can be read by injected scripts.',
     cookies: 'Cookie flags are weak for sensitive contexts and may increase session theft risk.',
+    console: 'Client-side console logs appear to include sensitive authentication/session data.',
   };
   return reasons[finding.category] || 'Potential security issue based on static rule matching.';
 }
@@ -4082,6 +4371,10 @@ function inferFixHint(finding) {
     cookies: {
       text: 'Mark sensitive cookies as Secure and HttpOnly.',
       url: 'https://owasp.org/www-community/controls/SecureCookieAttribute',
+    },
+    console: {
+      text: 'Remove sensitive fields from console logs and gate debug logging by environment.',
+      url: 'https://owasp.org/Top10/A09_2021-Security_Logging_and_Monitoring_Failures/',
     },
   };
   return hints[finding.category] || { text: 'Review this finding and tighten security controls where applicable.', url: '' };
@@ -4796,12 +5089,14 @@ function getSecretSignatures() {
   const all = [
     { id: 'aws-access-key', label: 'AWS Access Key', category: 'cloud', regex: /\b(AKIA[0-9A-Z]{16})\b/g, base: 3 },
     { id: 'aws-sts-key', label: 'AWS STS Key', category: 'cloud', regex: /\b(ASIA[0-9A-Z]{16})\b/g, base: 3 },
+    { id: 'aws-secret-access-key-assignment', label: 'AWS Secret Access Key Assignment', category: 'cloud', regex: /(?:aws|amazon).{0,32}(?:secret|access).{0,12}key\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']/gi, base: 3 },
     { id: 'aws-mws-key', label: 'AWS MWS Key', category: 'cloud', regex: /\b(amzn\.mws\.[0-9a-f-]{36})\b/g, base: 3 },
     { id: 'google-api-key', label: 'Google API Key', category: 'cloud', regex: /\b(AIza[0-9A-Za-z\-_]{35})\b/g, base: 3 },
     { id: 'google-oauth-secret', label: 'Google OAuth Secret', category: 'cloud', regex: /google.*client.*secret\s*[:=]\s*["']([A-Za-z0-9\-_]{20,})["']/gi, base: 2 },
     { id: 'firebase-token', label: 'Firebase Token', category: 'cloud', regex: /\b(AAAA[A-Za-z0-9_\-]{7}:[A-Za-z0-9_\-]{120,})\b/g, base: 2 },
     { id: 'firebase-web-key', label: 'Firebase Web API Key', category: 'cloud', regex: /firebase.*apiKey\s*[:=]\s*["']([A-Za-z0-9\-_]{20,})["']/gi, base: 2 },
     { id: 'azure-storage-key', label: 'Azure Storage Account Key', category: 'cloud', regex: /AccountKey=([A-Za-z0-9+/=]{40,})/g, base: 3 },
+    { id: 'azure-sas-token', label: 'Azure SAS Token', category: 'cloud', regex: /\b(se=[^&\s]{8,}&sp=[A-Za-z]{1,8}&sv=[0-9-]{8,10}&sig=[A-Za-z0-9%+/=]{20,})\b/gi, base: 3 },
     { id: 'gcp-service-account', label: 'GCP Service Account Email', category: 'cloud', regex: /\b([a-z0-9-]{3,}@[a-z0-9-]{3,}\.iam\.gserviceaccount\.com)\b/gi, base: 2 },
     { id: 'stripe-secret', label: 'Stripe Secret Key', category: 'payment', regex: /\b(sk_(live|test)_[0-9a-zA-Z]{16,64})\b/g, base: 3 },
     { id: 'stripe-restricted', label: 'Stripe Restricted Key', category: 'payment', regex: /\b(rk_(live|test)_[0-9a-zA-Z]{16,64})\b/g, base: 3 },
@@ -4815,15 +5110,20 @@ function getSecretSignatures() {
     { id: 'twilio-account-sid', label: 'Twilio Account SID', category: 'communication', regex: /\b(AC[0-9a-fA-F]{32})\b/g, base: 2 },
     { id: 'discord-bot-token', label: 'Discord Bot Token', category: 'communication', regex: /\b([A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27})\b/g, base: 3 },
     { id: 'github-pat', label: 'GitHub PAT', category: 'development', regex: /\b(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,})\b/g, base: 3 },
+    { id: 'github-token-family', label: 'GitHub Token Family (gho/ghu/ghs/ghr)', category: 'development', regex: /\b(gh[ours]_[A-Za-z0-9]{30,255})\b/g, base: 3 },
     { id: 'gitlab-pat', label: 'GitLab PAT', category: 'development', regex: /\b(glpat-[A-Za-z0-9\-_]{20,})\b/g, base: 3 },
     { id: 'heroku-api-key', label: 'Heroku API Key', category: 'development', regex: /\b(hrku_[0-9a-zA-Z]{32})\b/g, base: 3 },
     { id: 'atlassian-token', label: 'Atlassian API Token', category: 'development', regex: /\b(ATATT3xFf[A-Za-z0-9_-]{20,})\b/g, base: 3 },
     { id: 'sendgrid-key', label: 'SendGrid API Key', category: 'development', regex: /\b(SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b/g, base: 3 },
     { id: 'npm-token', label: 'NPM Token', category: 'development', regex: /\b(npm_[A-Za-z0-9]{36})\b/g, base: 3 },
+    { id: 'npm-auth-token-assignment', label: 'NPM Auth Token Assignment', category: 'development', regex: /\/\/registry\.npmjs\.org\/:_authToken\s*=\s*([A-Za-z0-9\-_]{20,})/gi, base: 3 },
+    { id: 'pypi-token', label: 'PyPI Token', category: 'development', regex: /\b(pypi-[A-Za-z0-9\-_]{40,})\b/g, base: 3 },
+    { id: 'huggingface-token', label: 'HuggingFace Token', category: 'development', regex: /\b(hf_[A-Za-z0-9]{30,})\b/g, base: 3 },
     { id: 'digitalocean-token', label: 'DigitalOcean Token', category: 'development', regex: /\b(dop_v1_[A-Za-z0-9]{40,})\b/g, base: 3 },
     { id: 'shopify-access-token', label: 'Shopify Access Token', category: 'development', regex: /\b(shpat_[A-Za-z0-9]{20,})\b/g, base: 3 },
     { id: 'openai-key', label: 'OpenAI API Key', category: 'development', regex: /\b(sk-(?:proj-|live-)?[A-Za-z0-9]{20,})\b/g, base: 3 },
     { id: 'anthropic-key', label: 'Anthropic API Key', category: 'development', regex: /\b(sk-ant-[A-Za-z0-9\-_]{20,})\b/g, base: 3 },
+    { id: 'generic-api-key-assignment', label: 'Generic API/Secret Key Assignment', category: 'development', regex: /(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key)\s*[:=]\s*["']([A-Za-z0-9._\-]{10,120})["']/gi, base: 2 },
     { id: 'jwt-token', label: 'JWT Token', category: 'auth', regex: /\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g, base: 2 },
     { id: 'bearer-token', label: 'Bearer Token', category: 'auth', regex: /\b(Bearer\s+[A-Za-z0-9\-._~+/]+=*)\b/g, base: 2 },
     { id: 'oauth-access-token', label: 'OAuth Access Token', category: 'auth', regex: /\b(ya29\.[A-Za-z0-9\-_]+)\b/g, base: 3 },
@@ -4835,6 +5135,7 @@ function getSecretSignatures() {
     { id: 'mysql-uri', label: 'MySQL URI', category: 'database', regex: /\b(mysql:\/\/[^\s"'`]{8,})\b/g, base: 2 },
     { id: 'mssql-uri', label: 'MSSQL URI', category: 'database', regex: /\b(sqlserver:\/\/[^\s"'`]{8,})\b/g, base: 2 },
     { id: 'db-password-assignment', label: 'Database Password Assignment', category: 'database', regex: /(?:db|database|mongo|postgres|redis|mysql).{0,24}password\s*[:=]\s*["']([^"'\s]{8,})["']/gi, base: 2 },
+    { id: 'hardcoded-password-assignment', label: 'Hardcoded Password Assignment', category: 'auth', regex: /(?:password|passwd|pwd)\s*[:=]\s*["']([^"'\r\n]{6,80})["']/gi, base: 2 },
     { id: 'private-key', label: 'Private Key Block', category: 'auth', regex: /(-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----)/g, base: 3 },
     { id: 'public-key-block', label: 'Public Key Block', category: 'auth', regex: /(-----BEGIN PUBLIC KEY-----)/g, base: 1 },
     { id: 'pem-certificate', label: 'PEM Certificate Block', category: 'auth', regex: /(-----BEGIN CERTIFICATE-----)/g, base: 1 },
@@ -4851,17 +5152,25 @@ function getSecretSignaturesForPack(pack) {
     'aws-access-key',
     'aws-sts-key',
     'google-api-key',
+    'aws-secret-access-key-assignment',
+    'azure-sas-token',
     'stripe-secret',
     'slack-token',
     'slack-webhook',
     'github-pat',
+    'github-token-family',
     'gitlab-pat',
     'sendgrid-key',
+    'generic-api-key-assignment',
+    'npm-auth-token-assignment',
+    'pypi-token',
+    'huggingface-token',
     'openai-key',
     'anthropic-key',
     'jwt-token',
     'bearer-token',
     'oauth-access-token',
+    'hardcoded-password-assignment',
     'mongodb-uri',
     'postgres-uri',
     'redis-uri',
@@ -4964,6 +5273,11 @@ function validateSecretLocally(sig, raw, snippet) {
     if (!/(aws|amazon|access[_-]?key|secret)/i.test(ctx)) return { ok: false, bonus: 0, note: 'Missing AWS context' };
     return { ok: true, bonus: 1, note: 'AWS key format + context validated' };
   }
+  if (sig.id === 'aws-secret-access-key-assignment') {
+    if (!/^[A-Za-z0-9/+=]{40}$/.test(value)) return { ok: false, bonus: 0, note: 'AWS secret key format mismatch' };
+    if (!/(aws|amazon|secret|access[_-]?key)/i.test(ctx)) return { ok: false, bonus: 0, note: 'Missing AWS key context' };
+    return { ok: true, bonus: 1, note: 'AWS secret key assignment validated' };
+  }
   if (sig.id === 'google-api-key') {
     if (!/^AIza[0-9A-Za-z\-_]{35}$/.test(value)) return { ok: false, bonus: 0, note: 'Google key format mismatch' };
     return { ok: true, bonus: 1, note: 'Google API key format validated' };
@@ -4971,6 +5285,10 @@ function validateSecretLocally(sig, raw, snippet) {
   if (sig.id === 'github-pat') {
     if (!/^(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{70,})$/.test(value)) return { ok: false, bonus: 0, note: 'GitHub PAT format mismatch' };
     return { ok: true, bonus: 1, note: 'GitHub token format validated' };
+  }
+  if (sig.id === 'github-token-family') {
+    if (!/^gh[ours]_[A-Za-z0-9]{30,255}$/.test(value)) return { ok: false, bonus: 0, note: 'GitHub token family format mismatch' };
+    return { ok: true, bonus: 1, note: 'GitHub token family format validated' };
   }
   if (sig.id === 'gitlab-pat') {
     if (!/^glpat-[A-Za-z0-9\-_]{20,}$/.test(value)) return { ok: false, bonus: 0, note: 'GitLab PAT format mismatch' };
@@ -4988,6 +5306,11 @@ function validateSecretLocally(sig, raw, snippet) {
     if (!/^sk-(?:proj-|live-)?[A-Za-z0-9]{20,}$/.test(value)) return { ok: false, bonus: 0, note: 'OpenAI key format mismatch' };
     return { ok: true, bonus: 1, note: 'OpenAI key format validated' };
   }
+  if (sig.id === 'generic-api-key-assignment') {
+    if (value.length < 10) return { ok: false, bonus: 0, note: 'Assigned key value too short' };
+    if (!/(api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key)/i.test(ctx)) return { ok: false, bonus: 0, note: 'Missing key assignment context' };
+    return { ok: true, bonus: 1, note: 'Generic key assignment pattern validated' };
+  }
   if (sig.id === 'anthropic-key') {
     if (!/^sk-ant-[A-Za-z0-9\-_]{20,}$/.test(value)) return { ok: false, bonus: 0, note: 'Anthropic key format mismatch' };
     return { ok: true, bonus: 1, note: 'Anthropic key format validated' };
@@ -5004,9 +5327,30 @@ function validateSecretLocally(sig, raw, snippet) {
     if (!/^SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/.test(value)) return { ok: false, bonus: 0, note: 'SendGrid key format mismatch' };
     return { ok: true, bonus: 1, note: 'SendGrid key format validated' };
   }
+  if (sig.id === 'npm-auth-token-assignment') {
+    if (!/^[A-Za-z0-9\-_]{20,}$/.test(value)) return { ok: false, bonus: 0, note: 'NPM auth token format mismatch' };
+    return { ok: true, bonus: 1, note: 'NPM auth token assignment validated' };
+  }
+  if (sig.id === 'pypi-token') {
+    if (!/^pypi-[A-Za-z0-9\-_]{40,}$/.test(value)) return { ok: false, bonus: 0, note: 'PyPI token format mismatch' };
+    return { ok: true, bonus: 1, note: 'PyPI token format validated' };
+  }
+  if (sig.id === 'huggingface-token') {
+    if (!/^hf_[A-Za-z0-9]{30,}$/.test(value)) return { ok: false, bonus: 0, note: 'HuggingFace token format mismatch' };
+    return { ok: true, bonus: 1, note: 'HuggingFace token format validated' };
+  }
+  if (sig.id === 'azure-sas-token') {
+    if (!/sig=/i.test(value) || !/sv=/i.test(value)) return { ok: false, bonus: 0, note: 'Azure SAS missing required fields' };
+    return { ok: true, bonus: 1, note: 'Azure SAS structure validated' };
+  }
   if (sig.id === 'private-key') {
     if (!/-----BEGIN .*PRIVATE KEY-----/i.test(value) && !/private key/i.test(ctx)) return { ok: false, bonus: 0, note: 'Private key marker incomplete' };
     return { ok: true, bonus: 1, note: 'Private key marker validated' };
+  }
+  if (sig.id === 'hardcoded-password-assignment') {
+    if (value.length < 6) return { ok: false, bonus: 0, note: 'Password assignment too short' };
+    if (!/(password|passwd|pwd)/i.test(ctx)) return { ok: false, bonus: 0, note: 'Missing password assignment context' };
+    return { ok: true, bonus: 1, note: 'Hardcoded password assignment validated' };
   }
   if (sig.id.endsWith('-uri')) {
     try {
@@ -5618,6 +5962,79 @@ function copyOwaspMarkdown() {
   copyToClipboard(md).then(() => showToast('OWASP markdown copied')).catch(() => showCopyModal(md));
 }
 
+function hasSensitiveConsoleContent(input) {
+  return /(password|passwd|pwd|token|secret|authorization|bearer|api[_-]?key|jwt|username|logindata|isloggedin)/i.test(String(input || ''));
+}
+
+async function collectRuntimeConsoleEntries(tabId) {
+  try {
+    const res = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const g = window;
+        const maxEntries = 200;
+        if (!Array.isArray(g.__hacktoolsConsoleBuffer)) g.__hacktoolsConsoleBuffer = [];
+
+        const stringifyArg = (v) => {
+          try {
+            if (typeof v === 'string') return v;
+            if (v === null || v === undefined) return String(v);
+            if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+            if (typeof v === 'object') {
+              const seen = new WeakSet();
+              return JSON.stringify(v, (k, val) => {
+                if (typeof val === 'object' && val !== null) {
+                  if (seen.has(val)) return '[Circular]';
+                  seen.add(val);
+                }
+                return val;
+              });
+            }
+            return String(v);
+          } catch (_) {
+            return '[Unserializable]';
+          }
+        };
+
+        let installedNow = false;
+        if (!g.__hacktoolsConsoleHookInstalled) {
+          installedNow = true;
+          g.__hacktoolsConsoleHookInstalled = true;
+          g.__hacktoolsConsoleOriginals = g.__hacktoolsConsoleOriginals || {};
+          const methods = ['log', 'info', 'debug', 'warn', 'error', 'table', 'dir'];
+          methods.forEach((method) => {
+            const original = g.console && typeof g.console[method] === 'function' ? g.console[method].bind(g.console) : null;
+            if (!original) return;
+            g.__hacktoolsConsoleOriginals[method] = original;
+            g.console[method] = (...args) => {
+              try {
+                const text = args.map((a) => stringifyArg(a)).join(' ').slice(0, 3000);
+                g.__hacktoolsConsoleBuffer.push({
+                  ts: Date.now(),
+                  level: method,
+                  text,
+                });
+                if (g.__hacktoolsConsoleBuffer.length > maxEntries) {
+                  g.__hacktoolsConsoleBuffer.splice(0, g.__hacktoolsConsoleBuffer.length - maxEntries);
+                }
+              } catch (_) {}
+              return original(...args);
+            };
+          });
+        }
+
+        return {
+          installedNow,
+          entries: (g.__hacktoolsConsoleBuffer || []).slice(-120),
+        };
+      },
+    });
+    return res?.[0]?.result || { installedNow: false, entries: [] };
+  } catch (_) {
+    return { installedNow: false, entries: [] };
+  }
+}
+
 async function runSecurityScan(options = {}) {
   const { silent = false, deepOwasp = false } = options;
   if (scannerRunInProgress) {
@@ -5727,6 +6144,51 @@ async function runSecurityScan(options = {}) {
     });
 
     const allScripts = (data.inlineScripts || []).join('\n');
+    const staticConsoleRegex = /console\.(?:log|info|debug|warn|error|table|dir)\s*\(([\s\S]{0,260}?)\)/gi;
+    let staticConsoleMatch;
+    let staticConsoleHits = 0;
+    while ((staticConsoleMatch = staticConsoleRegex.exec(allScripts)) && staticConsoleHits < 3) {
+      const expression = String(staticConsoleMatch[1] || '');
+      if (!hasSensitiveConsoleContent(expression)) continue;
+      staticConsoleHits += 1;
+      findings.push({
+        severity: /password|passwd|pwd|token|secret|authorization|bearer|api[_-]?key|jwt/i.test(expression) ? 'high' : 'medium',
+        confidence: 'medium',
+        category: 'console',
+        msg: 'Potential sensitive data logged via console in inline script',
+        reason: 'Inline script appears to log authentication/session-related fields via console.*.',
+        detail: {
+          type: 'script',
+          domain: pageHost,
+          sourceSnippet: extractMatchedSnippet(allScripts, /console\.(?:log|info|debug|warn|error|table|dir)\s*\(([\s\S]{0,260}?)\)/i),
+        },
+      });
+    }
+
+    const runtimeConsole = await collectRuntimeConsoleEntries(tabId);
+    const seenRuntimeConsole = new Set();
+    (runtimeConsole.entries || []).forEach((entry) => {
+      const text = String(entry?.text || '');
+      if (!text || !hasSensitiveConsoleContent(text)) return;
+      const normalized = text.toLowerCase().slice(0, 280);
+      if (seenRuntimeConsole.has(normalized)) return;
+      seenRuntimeConsole.add(normalized);
+      findings.push({
+        severity: /password|passwd|pwd|token|secret|authorization|bearer|api[_-]?key|jwt/i.test(text) ? 'high' : 'medium',
+        confidence: 'high',
+        category: 'console',
+        msg: `Runtime console.${entry.level || 'log'} contains sensitive-looking data`,
+        reason: 'Captured runtime console output includes authentication/session-related keys or values.',
+        detail: {
+          type: 'runtime-console',
+          domain: pageHost,
+          sourceSnippet: text.slice(0, 600),
+          capturedAt: entry.ts || Date.now(),
+          note: runtimeConsole.installedNow ? 'Console monitor installed in this scan. Reproduce user flow once and rescan for full coverage.' : '',
+        },
+      });
+    });
+
     if (/addEventListener\s*\(\s*['"]message['"]|onmessage\s*=|\.on\s*\(\s*['"]message['"]/i.test(allScripts)) {
       const hasOrigin = /\.origin\s*===|event\.origin|e\.origin|origin\s*!==|\.startsWith\s*\(\s*['"]https?:/i.test(allScripts);
       if (!hasOrigin) {
@@ -5964,7 +6426,18 @@ function applyScannerFilters() {
 function renderScannerFindings(findings) {
   const resultsEl = document.getElementById('scannerResults');
   if (findings.length === 0) {
-    resultsEl.innerHTML = '<p class="scanner-ok">No issues found for current filter.</p>';
+    const hasAnyScan = !!scannerLastScanMeta.lastScanAt;
+    const hasAnyFindings = scannerFindingsCache.length > 0;
+    const hasFilter = !!document.getElementById('scannerSeverityFilter')?.value || !!(document.getElementById('scannerSearchInput')?.value || '').trim();
+    if (!hasAnyScan) {
+      resultsEl.innerHTML = '<div class="empty-state"><strong>Scanner is ready.</strong><p>Click Run Scan, then browse and capture more requests to improve coverage.</p></div>';
+    } else if (!hasAnyFindings) {
+      resultsEl.innerHTML = '<div class="empty-state"><strong>No findings in latest scan.</strong><p>Try broader app flows and rerun scan to evaluate more endpoints.</p></div>';
+    } else if (hasFilter) {
+      resultsEl.innerHTML = '<p class="scanner-ok">No issues found for current filter. Clear filters to view all findings.</p>';
+    } else {
+      resultsEl.innerHTML = '<p class="scanner-ok">No issues found.</p>';
+    }
     return;
   }
 
@@ -6174,6 +6647,7 @@ function setupIntruder() {
   const resultCloseBtn = document.getElementById('resultModalClose');
   if (resultCloseBtn) resultCloseBtn.addEventListener('click', () => resultModal?.classList.add('hidden'));
   if (resultModal) resultModal.addEventListener('click', (e) => { if (e.target === resultModal) resultModal.classList.add('hidden'); });
+  renderIntruderEmptyState();
 }
 
 let intruderAbortController = null;
@@ -6276,9 +6750,30 @@ function stopIntruderAttack() {
 
 let intruderResultsCache = [];
 
+function renderIntruderEmptyState() {
+  const tbody = document.getElementById('intruderResultsBody');
+  const statusEl = document.getElementById('intruderStatus');
+  if (!tbody) return;
+  if (statusEl && !statusEl.textContent) {
+    statusEl.textContent = 'Ready. Configure markers and start attack.';
+  }
+  tbody.innerHTML = `
+    <tr>
+      <td colspan="7" class="intruder-empty-cell">
+        Add payload markers (\u00a7value\u00a7 or $value$), then click <strong>Start Attack</strong>.<br>
+        Tip: begin with 5-20 payloads and low concurrency for stable testing.
+      </td>
+    </tr>
+  `;
+}
+
 function renderIntruderResults(results) {
   intruderResultsCache = results;
   const tbody = document.getElementById('intruderResultsBody');
+  if (!results || results.length === 0) {
+    renderIntruderEmptyState();
+    return;
+  }
   const baseline = results[0];
   tbody.innerHTML = results
     .map(

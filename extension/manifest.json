@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "HackTools++ UAT",
-  "version": "1.0.0",
+  "name": "HackTools++",
+  "version": "2.0.2",
   "description": "HackTools++: Repeater, Intruder, Decoder, and Scanner in DevTools. Capture, edit, and replay HTTP requests for testing.",
   "icons": {
     "16": "icons/icon16.png",
@@ -9,6 +9,9 @@
     "128": "icons/icon128.png"
   },
   "devtools_page": "devtools.html",
+  "background": {
+    "service_worker": "background.js"
+  },
   "permissions": ["storage", "scripting", "cookies"],
   "host_permissions": ["<all_urls>"]
 }

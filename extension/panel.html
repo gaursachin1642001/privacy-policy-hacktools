@@ -61,22 +61,35 @@
       </div>
       <ul id="requestList" class="request-list"></ul>
     </aside>
+    <div id="leftResizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize captured requests panel"></div>
 
     <!-- Center: Request Editor + Response -->
     <main class="main-content">
       <div class="mode-tabs">
         <button type="button" class="mode-tab active" data-mode="repeater">Repeater</button>
-        <button type="button" class="mode-tab" data-mode="intruder">Intruder</button>
-        <button type="button" class="mode-tab" data-mode="decoder">Decoder</button>
+        <button type="button" class="mode-tab" data-mode="intruder" data-advanced-tab="true">Intruder</button>
+        <button type="button" class="mode-tab" data-mode="decoder" data-advanced-tab="true">Decoder</button>
         <button type="button" class="mode-tab" data-mode="scanner">Scanner</button>
-        <button type="button" class="mode-tab" data-mode="tech">Tech Detector</button>
-        <button type="button" class="mode-tab" data-mode="wordpress">WordPress Audit</button>
-        <button type="button" class="mode-tab" data-mode="websocket">WebSocket</button>
-        <button type="button" class="mode-tab" data-mode="secret">Secret Scanner</button>
+        <button type="button" class="mode-tab" data-mode="tech" data-advanced-tab="true">Tech Detector</button>
+        <button type="button" class="mode-tab" data-mode="wordpress" data-advanced-tab="true">WordPress Audit</button>
+        <!-- WebSocket tab temporarily disabled for production -->
+        <button type="button" class="mode-tab hidden" data-mode="websocket">WebSocket</button>
+        <button type="button" class="mode-tab" data-mode="secret" data-advanced-tab="true">Secret Scanner</button>
+        <button type="button" id="headerFeedbackBtn" class="mode-tab mode-feedback-btn" title="Share feedback">Feedback</button>
+        <button type="button" id="advancedTabsToggleBtn" class="mode-tab mode-tab-toggle" title="Show or hide advanced tools">Advanced: Off</button>
       </div>
 
       <div id="repeaterPanel" class="mode-panel">
-      <div class="editor-section">
+      <div id="repeaterEditorSection" class="editor-section">
+        <div id="quickStartCard" class="quick-start-card">
+          <div class="quick-start-title">Quick Start</div>
+          <ol class="quick-start-steps">
+            <li>Capture any request from the target site.</li>
+            <li>Click request in Captured Requests list.</li>
+            <li>Edit method/headers/body and click Send.</li>
+          </ol>
+          <button type="button" id="dismissQuickStartBtn" class="btn btn-small btn-secondary">Hide</button>
+        </div>
         <div class="section-header">
           <h3>Request Editor</h3>
           <div class="editor-actions">
@@ -122,7 +135,8 @@
         </div>
       </div>
 
-      <div class="response-section">
+      <div id="repeaterResizer" class="panel-resizer-horizontal" role="separator" aria-orientation="horizontal" aria-label="Resize repeater request and response panels"></div>
+      <div id="repeaterResponseSection" class="response-section">
         <div class="section-header">
           <h3>Response</h3>
           <div class="response-meta" id="responseMeta">
@@ -148,7 +162,7 @@
 
       <div id="intruderPanel" class="mode-panel hidden">
         <div class="intruder-layout">
-          <div class="intruder-config">
+          <div id="intruderConfigPanel" class="intruder-config">
             <div class="section-header">
               <h3>Request Template</h3>
               <p class="intruder-hint">Use §payload§ or $payload$ to mark injection points</p>
@@ -216,6 +230,7 @@
               <button type="button" id="stopAttackBtn" class="btn btn-secondary hidden">Stop</button>
             </div>
           </div>
+          <div id="intruderResizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize intruder config and results panels"></div>
           <div class="intruder-results">
             <div class="section-header">
               <h3>Results</h3>
@@ -336,8 +351,8 @@
           <div class="ws-config-row">
             <input id="wordpressBaseUrlInput" class="search-input ws-replace-input" placeholder="Base URL (optional) e.g. https://target.com/">
             <select id="wordpressEnumModeSelect" class="filter-select scanner-filter-select">
-              <option value="passive">Passive only</option>
-              <option value="safe-active" selected>Safe active</option>
+              <option value="passive" selected>Passive only</option>
+              <option value="safe-active">Safe active</option>
               <option value="aggressive">Aggressive</option>
             </select>
             <label class="scanner-auto-toggle">
@@ -476,6 +491,7 @@
       </div>
 
     </main>
+    <div id="rightResizer" class="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize AI assist panel"></div>
 
     <!-- Right Sidebar: AI Assist -->
     <aside id="aiSidebar" class="sidebar ai-sidebar">
@@ -500,6 +516,9 @@
             <li>Auth Bypass</li>
             <li>Rate Limit Tests</li>
           </ul>
+        </div>
+        <div class="privacy-note">
+          Privacy: analysis runs locally in DevTools by default. Remote validation is opt-in.
         </div>
       </div>
     </aside>

@@ -3,6 +3,20 @@
  * Handles request replay via fetch (no proxy required)
  */
 
+const UNINSTALL_FEEDBACK_URL = 'https://forms.gle/JUA2G6LuEbfms5dq8';
+
+function configureUninstallFeedbackUrl() {
+  try {
+    chrome.runtime.setUninstallURL(UNINSTALL_FEEDBACK_URL);
+  } catch (_) {}
+}
+
+configureUninstallFeedbackUrl();
+
+chrome.runtime.onInstalled.addListener(() => {
+  configureUninstallFeedbackUrl();
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'REPLAY_REQUEST') {
     replayRequest(message.payload)

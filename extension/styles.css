@@ -37,6 +37,11 @@ body {
   height: 100vh;
 }
 
+#app.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* Sidebars */
 .sidebar {
   width: 280px;
@@ -47,6 +52,50 @@ body {
   flex-direction: column;
   overflow: hidden;
   transition: width 0.2s ease, min-width 0.2s ease;
+}
+
+.panel-resizer {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid transparent;
+  border-right: 1px solid transparent;
+  transition: background 0.15s ease;
+}
+
+.panel-resizer:hover,
+.panel-resizer.active {
+  background: rgba(86, 156, 214, 0.2);
+  border-left-color: rgba(86, 156, 214, 0.35);
+  border-right-color: rgba(86, 156, 214, 0.35);
+}
+
+.panel-resizer.disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.panel-resizer-horizontal {
+  height: 6px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  background: transparent;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s ease;
+}
+
+.panel-resizer-horizontal:hover,
+.panel-resizer-horizontal.active {
+  background: rgba(86, 156, 214, 0.2);
+  border-top-color: rgba(86, 156, 214, 0.35);
+  border-bottom-color: rgba(86, 156, 214, 0.35);
+}
+
+.panel-resizer-horizontal.disabled {
+  cursor: default;
+  opacity: 0.35;
 }
 
 .ai-sidebar {
@@ -527,6 +576,49 @@ body {
   border-bottom-color: var(--accent-blue);
 }
 
+.mode-tab-toggle {
+  margin-left: auto;
+  color: var(--accent-yellow);
+}
+
+.mode-feedback-btn {
+  color: #bfe3ff;
+}
+
+.mode-feedback-btn:hover {
+  color: #ffffff;
+}
+
+.quick-start-card {
+  margin: 10px 14px 0;
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+}
+
+.quick-start-title {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--accent-green);
+}
+
+.quick-start-steps {
+  margin: 0 0 8px 18px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.quick-start-steps li {
+  margin-bottom: 4px;
+}
+
+.quick-start-card.hidden {
+  display: none;
+}
+
 .mode-panel {
   flex: 1;
   display: flex;
@@ -549,7 +641,6 @@ body {
 .intruder-config {
   width: 400px;
   min-width: 350px;
-  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -709,6 +800,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 10px;
+}
+
+.intruder-empty-cell {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: left;
+  padding: 12px;
 }
 
 .results-table .status-2xx { color: var(--success); }
@@ -1623,6 +1722,19 @@ body {
   padding: 12px;
   overflow-y: auto;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.privacy-note {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  background: rgba(78, 201, 176, 0.06);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .ai-section {

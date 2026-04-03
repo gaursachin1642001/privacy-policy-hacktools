@@ -1,11 +1,9 @@
 /**
- * HackTools++ UAT DevTools Bootstrap
- * Creates the custom "HackTools++ UAT" tab in Chrome DevTools
- * TODO(prod): Rename "HackTools++ UAT" back to "HackTools++" before production publish.
+ * HackTools++ DevTools Bootstrap
+ * Creates the custom "HackTools++" tab in Chrome DevTools
  */
-// Keep UAT suffix during testing builds. Remove " UAT" for production.
 chrome.devtools.panels.create(
-  'HackTools++ UAT',
+  'HackTools++',
   '',
   'panel.html',
   (panel) => {
